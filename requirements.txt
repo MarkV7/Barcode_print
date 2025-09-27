@@ -1,0 +1,7 @@
+pandas
+customtkinter
+pystrich
+Pillow
+# pywin32
+code128
+requests
