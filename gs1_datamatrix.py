@@ -37,9 +37,7 @@ class GS1DataMatrixGenerator:
             processed_string = self.FNC1 + processed_string
         return processed_string
 
-    def generate_from_string(self,
-                         gs1_string: str,
-                         cell_size: int = 5) -> Image.Image:
+    def generate_from_string(self, gs1_string: str, cell_size: int = 5) -> Image.Image:
         """
         Генерация DataMatrix кода из строки GS1 без сохранения на диск.
         

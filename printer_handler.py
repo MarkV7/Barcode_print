@@ -8,7 +8,12 @@ from gs1_datamatrix import GS1DataMatrixGenerator
 import win32print
 import win32ui
 import code128
-
+# Переписать файл printer_handler.py, таким образом, чтобы не использовать библиотеки win32print, win32ui,
+# но функционал и все методы с соответствующими аргументами остались, для совместимости с ранее созданным кодом извне
+# НОВЫЕ ИМПОРТЫ ДЛЯ ZPL ПЕЧАТИ
+import socket
+import base64
+from typing import Optional, Dict
 
 # === Настройка логирования ===
 logging.basicConfig(
@@ -24,10 +29,52 @@ def log(msg):
 
 
 class LabelPrinter:
-    def __init__(self, printer_name='по умолчанию'):
+    def __init__(self, printer_name='XPriner 365B'):
         self.printer_name = printer_name
         self.MM_TO_PIXELS = 3.78  # ~1 мм ≈ 3.78 пикселей при 96 dpi
         self.label_size_mm = (58, 40)  # размер этикетки в мм
+        self.RAW_PRINTER_PORT = 9100  # Стандартный порт для RAW печати ZPL
+
+        # НОВЫЙ МЕТОД: Прямая печать ZPL через сеть
+    def print_zpl_network(self, zpl_code: str, host: str, port: int = 9100) -> bool:
+        """
+        Универсальная прямая печать ZPL-кода на сетевой принтер через TCP-сокет.
+        Используется для Wildberries и Ozon FBS этикеток.
+        """
+        try:
+            print(f"🖨️ Отправка ZPL на сетевой принтер {host}:{port}...")
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(5)  # Таймаут на подключение
+            s.connect((host, port))
+
+            # Отправляем ZPL-код как байты
+            s.sendall(zpl_code.encode('utf-8'))
+            s.close()
+            print("✅ ZPL-код успешно отправлен на печать.")
+            return True
+        except socket.error as e:
+            # Принтер XPriner 365B должен быть настроен на работу по сети (Ethernet)
+            print(f"❌ Ошибка сетевой печати: {e}. Проверьте IP, порт и доступность принтера.")
+            return False
+        except Exception as e:
+            print(f"❌ Неизвестная ошибка при ZPL печати: {e}")
+            return False
+
+    # НОВЫЙ МЕТОД: Точка входа для печати WB/Ozon этикеток
+    def print_wb_ozon_label(self, label_base64_data: str, printer_host: str, printer_port: int = 9100):
+        """
+        Точка входа. Декодирует Base64 данные этикетки (предположительно ZPL) и отправляет на печать.
+        """
+        try:
+            # Декодируем Base64. ZPL-данные часто приходят в такой кодировке.
+            decoded_zpl_code = base64.b64decode(label_base64_data).decode('utf-8')
+
+            # Отправляем на печать
+            success = self.print_zpl_network(decoded_zpl_code, printer_host, printer_port)
+            return success
+        except Exception as e:
+            print(f"❌ Ошибка декодирования или подготовки ZPL: {e}")
+            return False
 
     # --- Внутренние методы из оригинального кода ---
     def create_ozon_label(self, barcode_value, product_infos, font, height=200, font_size=14,

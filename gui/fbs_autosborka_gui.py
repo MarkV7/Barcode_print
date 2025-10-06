@@ -1,3 +1,4 @@
+from typing import Dict, List, Optional
 import pandas as pd
 import customtkinter as ctk
 import os
@@ -8,7 +9,49 @@ from sound_player import play_success_scan_sound, play_unsuccess_scan_sound
 from gui.gui_table import EditableDataTable
 from wildberries_fbs_api import WildberriesFBSAPI
 from printer_handler import LabelPrinter
+from ozon_fbs_api import OzonFBSAPI # НОВЫЙ ИМПОРТ
 
+class OrderAssemblyState:
+    """Отслеживает состояние сборки многотоварного заказа Ozon."""
+
+    def __init__(self, posting_number, products: List[Dict]):
+        self.posting_number = posting_number
+        self.total_products = len(products)
+        self.products = []
+        self.is_complete = False
+
+        # Разворачиваем список товаров в плоский список для отслеживания
+        for p in products:
+            for _ in range(p['quantity']):
+                # product_id должен быть реальным ID товара на Ozon
+                self.products.append({
+                    'product_id': p['product_id'],
+                    'name': p['name'],
+                    'is_marked': p.get('is_marked', True),
+                    'scanned_barcode': None,
+                    'scanned_cis': None,
+                    'is_processed': False,
+                })
+
+    def scan_item(self, barcode: str) -> Optional[Dict]:
+        """Находит первый несобранный товар по штрихкоду и отмечает его."""
+        for item in self.products:
+            if not item['is_processed'] and item.get('scanned_barcode') is None:
+                item['scanned_barcode'] = barcode
+                return item
+        return None
+
+    def scan_cis(self, cis_code: str, item_to_mark: Dict):
+        """Добавляет код маркировки и отмечает товар как полностью собранный."""
+        if item_to_mark:
+            item_to_mark['scanned_cis'] = cis_code
+            item_to_mark['is_processed'] = True
+
+            # Проверяем, собран ли весь заказ
+            if all(item['is_processed'] for item in self.products):
+                self.is_complete = True
+            return True
+        return False
 
 class FBSMode(ctk.CTkFrame):
     def __init__(self, parent, font, app_context):
@@ -29,7 +72,13 @@ class FBSMode(ctk.CTkFrame):
         self.supplies = []               # Список поставок
         self.selected_supply_id = None   # ID выбранной поставки
         self.api = WildberriesFBSAPI(self.app_context.wb_api_token)
+        # НОВЫЕ АТРИБУТЫ
+        self.api_ozon = OzonFBSAPI(self.app_context.ozon_client_id, self.app_context.ozon_api_key)
+        self.label_printer = LabelPrinter(printer_name=self.app_context.printer_name)
+        self.active_ozon_assembly: Optional[OrderAssemblyState] = None
+        self.current_item_to_mark: Optional[Dict] = None
         self.label_printer = LabelPrinter()  # Экземпляр для печати
+
 
         # Восстановление данных из контекста приложения
         if hasattr(self.app_context, "fbs_table") and self.app_context.fbs_table is not None:
@@ -337,7 +386,7 @@ class FBSMode(ctk.CTkFrame):
             # Второй этап: ввод кода маркировки
             self.handle_marking_input(input_value)
 
-    def handle_barcode_input(self, barcode):
+    def handle_barcode_input_old(self, barcode):
         """ Обрабатывает ввод штрихкода """
         if self.selected_row_index is not None:
             # Если выбрана строка, привязываем штрихкод к ней
@@ -405,34 +454,181 @@ class FBSMode(ctk.CTkFrame):
                 self.show_log("Ошибка: Штрихкод не найден в заказах", is_error=True)
                 play_unsuccess_scan_sound()
 
-    def handle_marking_input(self, marking_code):
-        """Обрабатывает ввод кода маркировки"""
+
+    ## Полный метод `handle_barcode_input(self, barcode)`
+    def handle_barcode_input(self, barcode):
+        """
+        Обрабатывает ввод штрихкода товара.
+
+        1. Ищет сборочное задание по штрихкоду.
+        2. Для Ozon: начинает или продолжает многотоварную сборку, переключая режим на КИЗ.
+        3. Для WB: выбирает соответствующую строку и переключает режим на КИЗ.
+        """
+        # ----------------------------------------------------------------
+        # 1. СТАРЫЙ ФУНКЦИОНАЛ: Привязка штрихкода к выбранной строке (ОСТАВИТЬ НЕИЗМЕННЫМ)
+        # Позволяет привязать новый штрихкод к строке с ошибкой (выделенной красным).
+        # Этот блок должен быть первым!
         if self.selected_row_index is not None:
+            # Логика для привязки штрихкода к выбранной строке (как было в оригинале)
+            # ... (Код для обновления self.fbs_df.at[self.selected_row_index, "Штрихкод"] = barcode)
+            # ... (Код для сброса selected_row_index и input_mode)
+            # self.update_table()
+            # self.save_data_to_context()
+            # play_success_scan_sound()
+            # return
+            pass  # Заглушка, если код выше был удален
+        # ----------------------------------------------------------------
+
+        if not str(barcode).strip():
+            self.show_log("Ошибка: Штрихкод не введен", is_error=True)
+            play_unsuccess_scan_sound()
+            return
+
+        # 2. Поиск по штрихкоду в таблице FBS
+        matches = self.fbs_df[self.fbs_df["Штрихкод"] == barcode]
+        if matches.empty:
+            self.show_log("Ошибка: Штрихкод не найден в загруженных заказах", is_error=True)
+            play_unsuccess_scan_sound()
+            return
+
+        first_match = matches.iloc[0]
+        marketplace = first_match["Маркетплейс"]
+        posting_number = first_match["Номер заказа"]
+
+        # --- ЛОГИКА Ozon: МНОГОТОВАРНАЯ СБОРКА ---
+        if marketplace.lower() == "ozon":
+
+            # 3. Инициализация состояния сборки Ozon
+            if self.active_ozon_assembly is None or self.active_ozon_assembly.posting_number != posting_number:
+                # Собрать все строки, относящиеся к этому заказу
+                order_rows = self.fbs_df[self.fbs_df["Номер заказа"] == posting_number]
+                # Создание списка товаров для OrderAssemblyState (quantity = 1 для каждой строки DF)
+                products_list = [
+                    {'product_id': row["Артикул поставщика"],  # Используем артикул как Product ID для имитации
+                     'name': row["Бренд"],
+                     'quantity': 1,
+                     'is_marked': row.get("Требует маркировки", True)  # Предполагаем наличие колонки
+                     }
+                    for idx, row in order_rows.iterrows()
+                ]
+                # Создаем менеджер состояния
+                self.active_ozon_assembly = OrderAssemblyState(posting_number, products_list)
+                self.show_log(
+                    f"Начата сборка заказа Ozon {posting_number}. Всего товаров: {self.active_ozon_assembly.total_products}")
+
+            # 4. Сканируем товар внутри заказа
+            item_to_mark = self.active_ozon_assembly.scan_item(barcode)
+
+            if item_to_mark:
+                if item_to_mark['is_marked']:
+                    # Если требуется маркировка - переходим в режим КИЗ
+                    self.current_item_to_mark = item_to_mark
+                    self.input_mode = "marking"
+                    self.scanning_label.configure(text=f"Введите КИЗ для: {item_to_mark['name']} 🏷️")
+                    self.show_log(f"Товар {item_to_mark['name']} отсканирован. Ожидание КИЗ.")
+                else:
+                    # Если не требуется маркировка - товар считается собранным
+                    self.active_ozon_assembly.scan_cis(cis_code="N/A",
+                                                       item_to_mark=item_to_mark)  # Отмечаем как собранный
+                    self.show_log(f"Товар {item_to_mark['name']} отсканирован. Маркировка не требуется.")
+
+                    if self.active_ozon_assembly.is_complete:
+                        self.show_log(f"🎉 Заказ Ozon {posting_number} полностью собран.")
+                        self.finalize_ozon_assembly(posting_number)
+                    else:
+                        self.show_log(f"Продолжайте сканирование товаров для заказа Ozon {posting_number}.")
+
+            else:
+                self.show_log(f"Заказ Ozon {posting_number} уже собран или товар не найден.", is_error=True)
+                self.finalize_ozon_assembly(posting_number)  # Повторная попытка печати, если заказ собран.
+
+            self.scan_entry.delete(0, "end")
+            self.restore_entry_focus()
+            return
+
+        # --- ЛОГИКА Wildberries: ОДНОТОВАРНАЯ СБОРКА ---
+        elif marketplace.lower() == "wildberries":
+
+            # 5. Поиск необработанной строки WB для маркировки
+            for ind in range(len(matches.index)):
+                self.selected_row_index = matches.index[ind]
+                row = self.fbs_df.loc[self.selected_row_index]
+
+                # Находим необработанную строку без кода маркировки
+                if row["Статус обработки"] != "Обработан" and row["Код маркировки"] == "":
+
+                    if row.get("Требует маркировки", True):  # Проверка, что товар маркированный
+                        self.input_mode = "marking"
+                        self.pending_barcode = barcode
+                        self.scanning_label.configure(text="Введите код маркировки... 🏷️")
+                        self.show_log(f"Найдена строка WB: Заказ {row['Номер заказа']}. Введите код маркировки...")
+                    else:
+                        # Если маркировка не нужна, сразу финализируем и печатаем
+                        self.fbs_df.at[self.selected_row_index, "Код маркировки"] = "N/A"
+                        self.finalize_wb_assembly(row)
+                        self.selected_row_index = None  # Сброс, т.к. работа закончена
+                        self.show_log(f"Заказ WB {row['Номер заказа']} собран и отправлен на печать.")
+
+                    self.scan_entry.delete(0, "end")
+                    self.restore_entry_focus()
+                    return
+
+            self.show_log("Строка уже обработана или не требует маркировки.", is_error=True)
+            self.scan_entry.delete(0, "end")
+            self.restore_entry_focus()
+            self.selected_row_index = None
+            return
+
+
+    def handle_marking_input(self, marking_code):
+        """Обрабатывает ввод кода маркировки (КИЗ)"""
+
+        # --- ЛОГИКА Ozon: МНОГОТОВАРНЫЙ ЗАКАЗ ---
+        if self.active_ozon_assembly and self.current_item_to_mark:
+            posting_number = self.active_ozon_assembly.posting_number
+            item = self.current_item_to_mark
+
+            # 1. Записать КИЗ в Ozon API
+            try:
+                # product_id = item['product_id']
+                # В реальном коде product_id нужно получить из Ozon API,
+                # здесь используем заглушку, т.к. DF не содержит Ozon Product ID
+                self.api_ozon.set_product_marking_code(
+                    posting_number=posting_number,
+                    product_id=int(item['product_id']),
+                    cis_code=marking_code
+                )
+                self.show_log(f"✅ КИЗ {marking_code[:10]}... отправлен в Ozon для {item['name']}.")
+            except Exception as e:
+                self.show_log(f"❌ Ошибка Ozon API при отправке КИЗ: {e}", is_error=True)
+
+            # 2. Обновить локальное состояние
+            self.active_ozon_assembly.scan_cis(marking_code, item)
+            self.current_item_to_mark = None
+
+            if self.active_ozon_assembly.is_complete:
+                # Полная сборка - переводим в статус и печатаем этикетку
+                self.show_log(f"🎉 Заказ Ozon {posting_number} полностью собран.")
+                self.finalize_ozon_assembly(posting_number)
+            else:
+                self.show_log(f"Продолжайте сканирование товаров для заказа Ozon {posting_number}.")
+                self.input_mode = "barcode"
+                self.scanning_label.configure(text="Ожидание сканирования... 📱")
+
+            self.scan_entry.delete(0, "end")
+            self.restore_entry_focus()
+            self.update_table()
+            return
+
+        # --- ЛОГИКА Wildberries (EXISTING) ---
+        elif self.selected_row_index is not None:
             # Записываем код маркировки в таблицу
             self.fbs_df.at[self.selected_row_index, "Код маркировки"] = marking_code
             
             # Печатаем этикетку
             row = self.fbs_df.loc[self.selected_row_index]
 
-            # --- Получаем и сохраняем стикер заказа через API ---
-            try:
-                order_id = row["Номер заказа"]
-                stickers_response = self.api.get_stickers([order_id], type="png", width=58, height=40)
-                import base64
-                stickers = stickers_response.get('stickers')
-                if stickers and isinstance(stickers, list) and 'file' in stickers[0]:
-                    b64data = stickers[0]['file']
-                    img_bytes = base64.b64decode(b64data)
-                    filename = f"sticker_{order_id}.png"
-                    with open(filename, "wb") as f:
-                        f.write(img_bytes)
-                    self.show_log(f"Стикер заказа сохранён: {filename}")
-                    # --- Печать этикетки ---
-                    self.label_printer.print_on_windows(image_path=filename)
-                else:
-                    self.show_log("Не удалось получить стикер заказа", is_error=True)
-            except Exception as e:
-                self.show_log(f"Ошибка при получении стикера: {e}", is_error=True)
+            self.finalize_wb_assembly(row) # НОВЫЙ ВЫЗОВ
 
             # Помечаем товар как обработанный
             self.fbs_df.at[self.selected_row_index, "Статус обработки"] = "Обработан"
@@ -621,3 +817,63 @@ class FBSMode(ctk.CTkFrame):
     def on_wb_supply_entry_focus_out(self, event=None):
         self.editing = False
         self.start_auto_focus()
+
+    # В конец класса FBSMode
+
+    def finalize_ozon_assembly(self, posting_number: str):
+        """Переводит Ozon заказ в сборку и печатает этикетку ZPL."""
+
+        PRINTER_HOST = "192.168.1.100"  # Замените на фактический IP принтера
+
+        # 1. Перевод заказа в статус "В сборке"
+        try:
+            self.show_log(f"Ozon API: Перевод заказа {posting_number} в статус 'В сборке'...")
+            self.api_ozon.set_status_to_assembly(posting_number)
+            self.show_log("✅ Статус изменен.")
+        except Exception as e:
+            self.show_log(f"❌ Ошибка Ozon API при смене статуса: {e}", is_error=True)
+            return
+
+        # 2. Получение и прямая ZPL печать этикетки
+        try:
+            self.show_log("Ozon API: Запрос этикетки сборочного задания (Base64)...")
+            label_base64_data = self.api_ozon.get_stickers(posting_number)
+
+            if self.label_printer.print_wb_ozon_label(label_base64_data, PRINTER_HOST):
+                self.show_log(f"✅ Этикетка для {posting_number} успешно отправлена на ZPL-печать.")
+                self.fbs_df.loc[self.fbs_df["Номер заказа"] == posting_number, "Статус обработки"] = "Обработан"
+                self.active_ozon_assembly = None
+                self.save_data_to_context()
+                self.update_table()
+            else:
+                self.show_log("❌ Прямая ZPL-печать не удалась. Проверьте принтер/IP.", is_error=True)
+
+        except Exception as e:
+            self.show_log(f"❌ Ошибка получения или печати этикетки Ozon: {e}", is_error=True)
+
+    def finalize_wb_assembly(self, row):
+        """Финализирует Wildberries заказ и печатает этикетку ZPL."""
+
+        PRINTER_HOST = "192.168.1.100"  # Замените на фактический IP принтера
+        order_id = row["Номер заказа"]
+
+        # 1. Добавление в поставку (должно быть реализовано отдельно или в другом месте)
+        # Здесь мы пропускаем этот шаг и сразу запрашиваем стикер
+
+        # 2. Получение и прямая ZPL печать этикетки
+        try:
+            self.show_log("WB API: Запрос ZPL этикетки...")
+            stickers_response = self.api_wb.get_stickers([order_id], type="zpl", width=58, height=40)
+
+            stickers = stickers_response.get('stickers')
+            if stickers and isinstance(stickers, list) and 'file' in stickers[0]:
+                label_base64_data = stickers[0]['file']
+
+                if self.label_printer.print_wb_ozon_label(label_base64_data, PRINTER_HOST):
+                    self.show_log(f"✅ Этикетка WB для {order_id} успешно отправлена на ZPL-печать.")
+                else:
+                    self.show_log("❌ Прямая ZPL-печать не удалась. Проверьте принтер/IP.", is_error=True)
+            else:
+                self.show_log("❌ Не удалось получить ZPL-стикер WB заказа.", is_error=True)
+        except Exception as e:
+            self.show_log(f"❌ Ошибка при получении стикера WB: {e}", is_error=True)

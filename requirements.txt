@@ -2,6 +2,9 @@ pandas
 customtkinter
 pystrich
 Pillow
+# win32printing
 # pywin32
 code128
 requests
+dotenv
+easygui

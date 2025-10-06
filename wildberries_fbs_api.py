@@ -62,3 +62,16 @@ class WildberriesFBSAPI:
         response = self.session.post(url, params={"width": width, "height": height, "type": type}, json=data)
         response.raise_for_status()
         return response.json()
+
+    def add_orders_to_supply(self, supply_id: str, order_ids: list) -> Dict:
+        """
+        Добавить сборочные задания в поставку.
+        supply_id: ID поставки
+        order_ids: список ID сборочных заданий (orders)
+        Возвращает: dict с результатом
+        """
+        url = f"{self.BASE_URL}/api/v3/supplies/{supply_id}/orders"
+        data = {"orders": order_ids}
+        response = self.session.post(url, json=data)
+        response.raise_for_status()
+        return response.json()
