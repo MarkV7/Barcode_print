@@ -8,3 +8,4 @@ code128
 requests
 dotenv
 easygui
+openpyxl

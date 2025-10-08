@@ -5,8 +5,8 @@ import textwrap
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont, ImageChops, ImageWin
 from gs1_datamatrix import GS1DataMatrixGenerator
-import win32print
-import win32ui
+# import win32print
+# import win32ui
 import code128
 # Переписать файл printer_handler.py, таким образом, чтобы не использовать библиотеки win32print, win32ui,
 # но функционал и все методы с соответствующими аргументами остались, для совместимости с ранее созданным кодом извне
@@ -29,7 +29,7 @@ def log(msg):
 
 
 class LabelPrinter:
-    def __init__(self, printer_name='XPriner 365B'):
+    def __init__(self, printer_name='по умолчанию'): #'XPriner 365B'
         self.printer_name = printer_name
         self.MM_TO_PIXELS = 3.78  # ~1 мм ≈ 3.78 пикселей при 96 dpi
         self.label_size_mm = (58, 40)  # размер этикетки в мм
@@ -342,48 +342,159 @@ class LabelPrinter:
         print(f"✅ Этикетка сохранена как '{output_path}'")
         return etiketka
 
-    def print_on_windows(self, image_path=None, image=None):
-        """
-        Отправляет изображение этикетки на печать.
-        Можно передать либо путь к файлу, либо объект PIL.Image.
-        """
-        temp_path = None
-        if image is not None:
-            temp_path = "__temp_label_print__.png"
-            image.save(temp_path)
-            image_path = temp_path
+        # ----------------------------------------------
+        # 1. НОВЫЙ ВНУТРЕННИЙ МЕТОД: Конвертация изображения в ZPL ^GFA
+        # ----------------------------------------------
 
-        try:
-            printer_name = self.printer_name if self.printer_name != 'по умолчанию' else win32print.GetDefaultPrinter()
-            print(f"🖨️ Печать на принтере: {printer_name}")
+    def _img_to_zpl_hex(self, img: Image.Image) -> str:
+        """
+        Конвертирует объект PIL.Image в ASCII Hex строку,
+        подходящую для команды ZPL ^GFA.
+        """
+        # 1. Конвертация в монохромный формат для термопринтера
+        img = img.convert("L").convert("1", dither=Image.Dither.FLOYDSTEINBERG)
 
-            hprinter = win32print.OpenPrinter(printer_name)
+        width_bytes = int(img.width / 8)
+        if img.width % 8 != 0:
+            width_bytes += 1
+
+        width_in_bytes = width_bytes
+        height = img.height
+
+        # 2. Получение байтов и конвертация в ASCII Hex
+        temp_buffer = BytesIO()
+        img.save(temp_buffer, format='PNG', optimize=True)
+        temp_buffer.seek(0)
+
+        # Получаем данные битовой карты (raw image data)
+        zpl_hex = ""
+        for y in range(height):
+            byte_val = 0
+            for x in range(img.width):
+                pixel = img.getpixel((x, y))
+                byte_val = byte_val << 1
+                if pixel == 0:  # Черный пиксель
+                    byte_val |= 1
+
+                if (x + 1) % 8 == 0 or (x + 1) == img.width:
+                    zpl_hex += f"{byte_val:02X}"
+                    byte_val = 0
+
+        # 3. ZPL-обертка для команды ^GFA
+        # ^XA - начало формата
+        # ^FOx,y - поле происхождения (позиция печати)
+        # ^GFA - графический формат ASCII
+        #   A - data_compression_method (A=ASCII)
+        #   h - total_data_bytes
+        #   w - width_in_bytes
+        #   l - height
+        #   data - ASCII data
+        # ^FS - конец поля
+        # ^XZ - конец формата
+
+        total_data_bytes = len(zpl_hex) // 2
+
+        zpl_command = textwrap.dedent(f"""
+               ^XA
+               ^FO0,0^GFA,{total_data_bytes},{total_data_bytes},{width_in_bytes},{zpl_hex}^FS
+               ^XZ
+           """).strip()
+
+        return zpl_command
+
+        # ----------------------------------------------
+        # 2. ЗАМЕНА WINDOWS-СПЕЦИФИЧНОГО print_on_windows
+        # ----------------------------------------------
+
+    def print_on_windows(self, image_path: Optional[str] = None, image: Optional[Image.Image] = None,
+                         printer_host: Optional[str] = None):
+        """
+        Кроссплатформенная замена print_on_windows.
+        Конвертирует изображение/файл в ZPL (^GFA) и отправляет на печать.
+        Сохраняет аргументы для обратной совместимости.
+        """
+        log("Метод print_on_windows вызван. Конвертация в ZPL ^GFA...")
+
+        # Определяем IP принтера (используем переданный или сохраненный)
+        host = printer_host if printer_host else self.PRINTER_HOST
+
+        if image_path:
+            # 1. Загрузка изображения из файла
             try:
-                win32print.StartDocPrinter(hprinter, 1, ("Этикетка", None, "RAW"))
-                win32print.StartPagePrinter(hprinter)
+                img = Image.open(image_path)
+            except FileNotFoundError:
+                log(f"❌ Ошибка: Файл не найден по пути: {image_path}")
+                return
+            except Exception as e:
+                log(f"❌ Ошибка загрузки изображения из файла: {e}")
+                return
+        elif image:
+            # 2. Используем переданный объект Image
+            img = image
+        else:
+            log("❌ Ошибка: Не передано ни изображение (объект), ни путь к файлу.")
+            return
 
-                bmp = Image.open(image_path)
-                dib = ImageWin.Dib(bmp)
-
-                hdc = win32ui.CreateDC()
-                hdc.CreatePrinterDC(printer_name)
-                hdc.StartDoc("Этикетка")
-                hdc.StartPage()
-                dib.draw(hdc.GetHandleOutput(), (0, 0, bmp.width, bmp.height))
-                hdc.EndPage()
-                hdc.EndDoc()
-                hdc.DeleteDC()
-
-                win32print.EndPagePrinter(hprinter)
-                win32print.EndDocPrinter(hprinter)
-            finally:
-                win32print.ClosePrinter(hprinter)
-
-            if temp_path and os.path.exists(temp_path):
-                os.remove(temp_path)
-
+        # 3. Конвертация в ZPL
+        try:
+            zpl_code = self._img_to_zpl_hex(img)
+            log(f"Изображение конвертировано в ZPL (^GFA). Длина ZPL: {len(zpl_code)} байт.")
         except Exception as e:
-            print("❌ Ошибка печати:", str(e))
+            log(f"❌ Ошибка конвертации изображения в ZPL: {e}")
+            return
+
+        # 4. Отправка ZPL на печать
+        success = self.print_zpl_network(zpl_code, host, self.RAW_PRINTER_PORT)
+
+        if success:
+            log(f"✅ Изображение успешно отправлено на печать на {host} (через ZPL ^GFA).")
+        else:
+            log(f"❌ Печать изображения на {host} не удалась.")
+
+    # ----------------------------------------------
+    # def print_on_windows_old(self, image_path=None, image=None):
+    #     """
+    #     Пытаемся избавиться от этого метода и привязке к Windows !!!!
+    #     Отправляет изображение этикетки на печать.
+    #     Можно передать либо путь к файлу, либо объект PIL.Image.
+    #     """
+    #     temp_path = None
+    #     if image is not None:
+    #         temp_path = "__temp_label_print__.png"
+    #         image.save(temp_path)
+    #         image_path = temp_path
+    #
+    #     try:
+    #         printer_name = self.printer_name if self.printer_name != 'по умолчанию' else win32print.GetDefaultPrinter()
+    #         print(f"🖨️ Печать на принтере: {printer_name}")
+    #
+    #         hprinter = win32print.OpenPrinter(printer_name)
+    #         try:
+    #             win32print.StartDocPrinter(hprinter, 1, ("Этикетка", None, "RAW"))
+    #             win32print.StartPagePrinter(hprinter)
+    #
+    #             bmp = Image.open(image_path)
+    #             dib = ImageWin.Dib(bmp)
+    #
+    #             hdc = win32ui.CreateDC()
+    #             hdc.CreatePrinterDC(printer_name)
+    #             hdc.StartDoc("Этикетка")
+    #             hdc.StartPage()
+    #             dib.draw(hdc.GetHandleOutput(), (0, 0, bmp.width, bmp.height))
+    #             hdc.EndPage()
+    #             hdc.EndDoc()
+    #             hdc.DeleteDC()
+    #
+    #             win32print.EndPagePrinter(hprinter)
+    #             win32print.EndDocPrinter(hprinter)
+    #         finally:
+    #             win32print.ClosePrinter(hprinter)
+    #
+    #         if temp_path and os.path.exists(temp_path):
+    #             os.remove(temp_path)
+    #
+    #     except Exception as e:
+    #         print("❌ Ошибка печати:", str(e))
 
     # --- API для работы с этикетками ---
     def print_ozon_label(self, barcode_value, product_info):

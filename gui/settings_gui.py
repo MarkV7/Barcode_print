@@ -1,7 +1,7 @@
 import tkinter as tk
 import customtkinter as ctk
-import win32print
 
+# import win32print  <-- УДАЛЕНО
 
 class SettingsMode(ctk.CTkFrame):
     def __init__(self, parent, font, app_context):
@@ -17,61 +17,47 @@ class SettingsMode(ctk.CTkFrame):
 
     def setup_ui(self):
         """Создаёт интерфейс настроек"""
-        # === Выбор принтера ===
+
+        # === Настройки API Wildberries ===
+        wb_frame = ctk.CTkFrame(self)
+        wb_frame.pack(fill="x", padx=20, pady=10)
+
+        ctk.CTkLabel(wb_frame, text="Токен Wildberries API (FBS):", font=self.font, anchor="w").pack(pady=(5, 0),
+                                                                                                     padx=5, anchor="w")
+        self.wb_token_entry = ctk.CTkEntry(wb_frame, font=self.font)
+        self.wb_token_entry.pack(fill="x", padx=5, pady=(0, 10))
+
+        # === Настройки API Ozon (НОВОЕ) ===
+        ozon_frame = ctk.CTkFrame(self)
+        ozon_frame.pack(fill="x", padx=20, pady=10)
+
+        ctk.CTkLabel(ozon_frame, text="Client ID Ozon API:", font=self.font, anchor="w").pack(pady=(5, 0), padx=5,
+                                                                                              anchor="w")
+        self.ozon_client_id_entry = ctk.CTkEntry(ozon_frame, font=self.font)
+        self.ozon_client_id_entry.pack(fill="x", padx=5, pady=(0, 5))
+
+        ctk.CTkLabel(ozon_frame, text="API Key Ozon:", font=self.font, anchor="w").pack(pady=(5, 0), padx=5, anchor="w")
+        self.ozon_api_key_entry = ctk.CTkEntry(ozon_frame, font=self.font, show="*")
+        self.ozon_api_key_entry.pack(fill="x", padx=5, pady=(0, 10))
+
+        # === Настройки Принтера (СЕТЕВЫЕ) ===
         printer_frame = ctk.CTkFrame(self)
         printer_frame.pack(fill="x", padx=20, pady=10)
 
-        printer_label = ctk.CTkLabel(
-            printer_frame,
-            text="Выберите принтер:",
-            font=self.font,
-            anchor="w"
-        )
-        printer_label.pack(pady=(5, 0), padx=5, anchor="w")
+        # 1. IP АДРЕС ПРИНТЕРА
+        ctk.CTkLabel(printer_frame, text="IP-адрес ZPL-принтера (XPriner 365B):", font=self.font, anchor="w").pack(
+            pady=(5, 0), padx=5, anchor="w")
+        self.printer_ip_entry = ctk.CTkEntry(printer_frame, font=self.font)
+        self.printer_ip_entry.pack(fill="x", padx=5, pady=(0, 5))
 
-        # Получаем список доступных принтеров
-        self.printer_var = tk.StringVar()
-        self.printer_combobox = ctk.CTkComboBox(
-            printer_frame,
-            values=self.get_printer_list(),
-            variable=self.printer_var,
-            state="readonly",
-            font=self.font
-        )
-        self.printer_combobox.pack(fill="x", padx=5, pady=5)
+        # 2. ПОРТ ПРИНТЕРА
+        ctk.CTkLabel(printer_frame, text="Порт принтера (обычно 9100):", font=self.font, anchor="w").pack(pady=(5, 0),
+                                                                                                          padx=5,
+                                                                                                          anchor="w")
+        self.printer_port_entry = ctk.CTkEntry(printer_frame, font=self.font)
+        self.printer_port_entry.pack(fill="x", padx=5, pady=(0, 10))
 
-        # === Поля ввода Токена WB API ===
-        wb_api_frame = ctk.CTkFrame(self)
-        wb_api_frame.pack(fill="x", padx=20, pady=10)
-
-        wb_api_label = ctk.CTkLabel(
-            wb_api_frame,
-            text="Укажите API Токен Wildberries:",
-            font=self.font,
-            anchor="w"
-        )
-        wb_api_label.pack(pady=(5, 0), padx=5, anchor="w")
-
-        # Поле ввода с плейсхолдером и возможностью скрытия текста
-        self.wb_token_entry = ctk.CTkEntry(
-            wb_api_frame,
-            font=self.font,
-            placeholder_text="Введите ваш API токен...",
-            show="•"  # Можно убрать, если не нужно скрывать
-        )
-        self.wb_token_entry.pack(fill="x", padx=5, pady=5)
-
-        # Если нужно: переключатель видимости
-        self.show_token_var = tk.BooleanVar(value=False)
-        toggle_token_visibility = ctk.CTkCheckBox(
-            wb_api_frame,
-            text="Показать токен",
-            variable=self.show_token_var,
-            command=lambda: self.wb_token_entry.configure(show="" if self.show_token_var.get() else "•")
-        )
-        toggle_token_visibility.pack(padx=5, pady=5, anchor="w")
-
-        # === Кнопка сохранения ===
+        # --- Кнопки и статус ---
         save_button = ctk.CTkButton(
             self,
             text="Сохранить настройки",
@@ -80,43 +66,63 @@ class SettingsMode(ctk.CTkFrame):
         )
         save_button.pack(pady=10)
 
-        # === Статус сохранения ===
         self.status_label = ctk.CTkLabel(
             self,
-            text="",
-            font=("Segoe UI", 12),
-            text_color="green"
+            text="Статус: Ожидание сохранения...",
+            font=self.font,
+            text_color="gray"
         )
         self.status_label.pack(pady=5)
 
     def get_printer_list(self):
-        """Получает список доступных принтеров в Windows"""
-        try:
-            printers = [printer[2] for printer in win32print.EnumPrinters(win32print.PRINTER_ENUM_LOCAL, None, 1)]
-            if not printers:
-                return ["Нет доступных принтеров"]
-            return printers
-        except Exception as e:
-            print(f"Ошибка при получении списка принтеров: {e}")
-            return ["Ошибка получения принтеров"]
+        """
+        Заглушка, заменяющая win32print.
+        В кроссплатформенном режиме мы используем IP/порт.
+        Возвращает фиктивный список для совместимости.
+        """
+        # Возвращаем список, чтобы не сломать инициализацию, если она использует этот метод
+        return ["Сетевой ZPL-принтер (IP/порт)"]
 
     def load_settings(self):
         """Загружает текущие настройки из контекста"""
-        default_printer = getattr(self.app_context, "printer_name", "по умолчанию")
+
+        # --- WB API ---
         wb_api_token = getattr(self.app_context, "wb_api_token", "")
-        if default_printer in self.get_printer_list():
-            self.printer_var.set(default_printer)
-        else:
-            self.printer_var.set("по умолчанию")
         self.wb_token_entry.insert(0, wb_api_token)
 
+        # --- Ozon API (НОВОЕ) ---
+        ozon_client_id = getattr(self.app_context, "ozon_client_id", "")
+        ozon_api_key = getattr(self.app_context, "ozon_api_key", "")
+        self.ozon_client_id_entry.insert(0, ozon_client_id)
+        self.ozon_api_key_entry.insert(0, ozon_api_key)
+
+        # --- Принтер (IP/Port) ---
+        printer_ip = getattr(self.app_context, "printer_ip", "192.168.1.100")
+        printer_port = getattr(self.app_context, "printer_port", "9100")
+
+        self.printer_ip_entry.insert(0, printer_ip)
+        self.printer_port_entry.insert(0, printer_port)
+
     def save_settings(self):
-        """Сохраняет выбранный принтер в контексте"""
-        selected_printer = self.printer_var.get()
+        """Сохраняет выбранные настройки в контексте"""
+
+        # --- WB API ---
         wb_api_token = self.wb_token_entry.get().strip()
-        self.app_context.printer_name = selected_printer
         self.app_context.wb_api_token = wb_api_token
 
-        # Обновление метки статуса
-        self.status_label.configure(text="Настройки успешно сохранены!")
-        self.after(3000, lambda: self.status_label.configure(text=""))
+        # --- Ozon API ---
+        self.app_context.ozon_client_id = self.ozon_client_id_entry.get().strip()
+        self.app_context.ozon_api_key = self.ozon_api_key_entry.get().strip()
+
+        # --- Принтер (IP/Port) ---
+        printer_ip = self.printer_ip_entry.get().strip()
+        printer_port = self.printer_port_entry.get().strip()
+
+        # Сохраняем IP и порт, а printer_name устанавливаем в фиктивное значение,
+        # чтобы не сломать внешние вызовы (хотя print_on_windows уже переписан)
+        self.app_context.printer_ip = printer_ip
+        self.app_context.printer_port = int(printer_port) if printer_port.isdigit() else 9100
+        self.app_context.printer_name = f"ZPL_PRINTER_{printer_ip}"
+
+        # Обновление статуса
+        self.status_label.configure(text="✅ Настройки успешно сохранены!", text_color="green")

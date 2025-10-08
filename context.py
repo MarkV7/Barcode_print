@@ -14,6 +14,8 @@ class AppContext:
         self.fbs_table: pd.DataFrame = None  # Таблица FBS автосборки
         self.printer_name: str = 'по умолчанию'
         self.wb_api_token: str = ''
+        self.ozon_client_id: str = ''
+        self.ozon_api_key: str = ''
 
     def save_to_file(self, filepath: str):
         """
@@ -23,6 +25,8 @@ class AppContext:
         data = {
             "printer_name": self.printer_name,
             "wb_api_token": self.wb_api_token,
+            "ozon_client_id": self.ozon_client_id,
+            "ozon_api_key": self.ozon_api_key,
             "df": self.df.to_dict(orient='records') if isinstance(self.df, pd.DataFrame) else None,
             "file_path": self.file_path,
             "return_table_df": self.return_table_df.to_dict(orient='records') if isinstance(self.return_table_df, pd.DataFrame) else None,
@@ -60,6 +64,8 @@ class AppContext:
             # Восстанавливаем поля
             self.printer_name = data.get("printer_name", "по умолчанию")
             self.wb_api_token = data.get("wb_api_token", "")
+            self.ozon_client_id = data.get("ozon_client_id", "")
+            self.ozon_api_key = data.get("ozon_api_key", "")
             self.file_path = data.get("file_path", None)
             # self.df = pd.DataFrame(data["df"]) if data.get("df") else None
             self.return_table_df = pd.DataFrame(data["return_table_df"]) if data.get("return_table_df") else None

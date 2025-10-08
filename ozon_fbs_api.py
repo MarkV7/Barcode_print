@@ -91,7 +91,7 @@ class OzonFBSAPI:
         }
         return self._request("POST", path, data=data)
 
-    def get_stickers(self, posting_number: str) -> bytes:
+    def get_stickers(self, posting_number: str) -> str:
         """
         Получить этикетку сборочного задания (фактически PDF/Base64 от Ozon,
         но для выполнения требования будет обработан как ZPL-источник).
@@ -115,5 +115,9 @@ class OzonFBSAPI:
 
         if not label_data_base64:
             raise Exception("Не удалось получить данные этикетки (пустой Base64)")
+
+        # Добавляем проверку для надёжности
+        if not isinstance(label_data_base64, str):
+            raise TypeError(f"Ozon API вернул данные этикетки в неверном формате ({type(label_data_base64)}). Ожидается str.")
 
         return label_data_base64

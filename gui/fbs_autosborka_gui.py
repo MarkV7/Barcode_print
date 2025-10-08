@@ -71,13 +71,14 @@ class FBSMode(ctk.CTkFrame):
         self.pending_barcode = None      # для хранения штрихкода между вводами
         self.supplies = []               # Список поставок
         self.selected_supply_id = None   # ID выбранной поставки
+        self.PRINTER_HOST = "192.168.1.100"  # Замените на фактический IP принтера
         self.api = WildberriesFBSAPI(self.app_context.wb_api_token)
         # НОВЫЕ АТРИБУТЫ
         self.api_ozon = OzonFBSAPI(self.app_context.ozon_client_id, self.app_context.ozon_api_key)
         self.label_printer = LabelPrinter(printer_name=self.app_context.printer_name)
         self.active_ozon_assembly: Optional[OrderAssemblyState] = None
         self.current_item_to_mark: Optional[Dict] = None
-        self.label_printer = LabelPrinter()  # Экземпляр для печати
+        # self.label_printer = LabelPrinter()  # Экземпляр для печати
 
 
         # Восстановление данных из контекста приложения
@@ -358,9 +359,9 @@ class FBSMode(ctk.CTkFrame):
         
         # Если есть только штрихкод - желтый
         if row["Штрихкод"] != "":
-            return "found"  # Желтый цвет для найденных штрихкодов
+            return "found"  # Желтый цвет для найденных штрих кодов
         
-        # Проверяем наличие в основной базе данных
+        # Проверяем наличие в основной базе данных !!! Этот участок надо потестить !!!
         if self.app_context.df is not None:
             matches = self.app_context.df[
                 (self.app_context.df["Артикул производителя"].astype(str) == str(row["Артикул поставщика"])) &
@@ -455,7 +456,7 @@ class FBSMode(ctk.CTkFrame):
                 play_unsuccess_scan_sound()
 
 
-    ## Полный метод `handle_barcode_input(self, barcode)`
+    ## Новый метод handle_barcode_input(self, barcode)
     def handle_barcode_input(self, barcode):
         """
         Обрабатывает ввод штрихкода товара.
@@ -496,7 +497,7 @@ class FBSMode(ctk.CTkFrame):
         posting_number = first_match["Номер заказа"]
 
         # --- ЛОГИКА Ozon: МНОГОТОВАРНАЯ СБОРКА ---
-        if marketplace.lower() == "ozon":
+        if "ozon" in marketplace.lower():
 
             # 3. Инициализация состояния сборки Ozon
             if self.active_ozon_assembly is None or self.active_ozon_assembly.posting_number != posting_number:
@@ -547,7 +548,7 @@ class FBSMode(ctk.CTkFrame):
             return
 
         # --- ЛОГИКА Wildberries: ОДНОТОВАРНАЯ СБОРКА ---
-        elif marketplace.lower() == "wildberries":
+        elif "wildberries" in marketplace.lower():
 
             # 5. Поиск необработанной строки WB для маркировки
             for ind in range(len(matches.index)):
@@ -823,7 +824,7 @@ class FBSMode(ctk.CTkFrame):
     def finalize_ozon_assembly(self, posting_number: str):
         """Переводит Ozon заказ в сборку и печатает этикетку ZPL."""
 
-        PRINTER_HOST = "192.168.1.100"  # Замените на фактический IP принтера
+        # PRINTER_HOST = "192.168.1.100"  # Замените на фактический IP принтера
 
         # 1. Перевод заказа в статус "В сборке"
         try:
@@ -839,7 +840,7 @@ class FBSMode(ctk.CTkFrame):
             self.show_log("Ozon API: Запрос этикетки сборочного задания (Base64)...")
             label_base64_data = self.api_ozon.get_stickers(posting_number)
 
-            if self.label_printer.print_wb_ozon_label(label_base64_data, PRINTER_HOST):
+            if self.label_printer.print_wb_ozon_label(label_base64_data, self.PRINTER_HOST):
                 self.show_log(f"✅ Этикетка для {posting_number} успешно отправлена на ZPL-печать.")
                 self.fbs_df.loc[self.fbs_df["Номер заказа"] == posting_number, "Статус обработки"] = "Обработан"
                 self.active_ozon_assembly = None
@@ -854,7 +855,7 @@ class FBSMode(ctk.CTkFrame):
     def finalize_wb_assembly(self, row):
         """Финализирует Wildberries заказ и печатает этикетку ZPL."""
 
-        PRINTER_HOST = "192.168.1.100"  # Замените на фактический IP принтера
+        # PRINTER_HOST = "192.168.1.100"  # Замените на фактический IP принтера
         order_id = row["Номер заказа"]
 
         # 1. Добавление в поставку (должно быть реализовано отдельно или в другом месте)
@@ -863,13 +864,13 @@ class FBSMode(ctk.CTkFrame):
         # 2. Получение и прямая ZPL печать этикетки
         try:
             self.show_log("WB API: Запрос ZPL этикетки...")
-            stickers_response = self.api_wb.get_stickers([order_id], type="zpl", width=58, height=40)
+            stickers_response = self.api.get_stickers([order_id], type="zpl", width=58, height=40)
 
             stickers = stickers_response.get('stickers')
             if stickers and isinstance(stickers, list) and 'file' in stickers[0]:
                 label_base64_data = stickers[0]['file']
 
-                if self.label_printer.print_wb_ozon_label(label_base64_data, PRINTER_HOST):
+                if self.label_printer.print_wb_ozon_label(label_base64_data, self.PRINTER_HOST):
                     self.show_log(f"✅ Этикетка WB для {order_id} успешно отправлена на ZPL-печать.")
                 else:
                     self.show_log("❌ Прямая ZPL-печать не удалась. Проверьте принтер/IP.", is_error=True)

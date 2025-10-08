@@ -66,6 +66,7 @@ class AppUI:
             ("ФБО Wildberries", self.show_wildberries),
             ("Автосборка ФБС", self.show_autosborka_fbs),
             ("Настройки", self.show_settings),
+            ("Выход", self.on_close),
         ]
 
         for i, (name, command) in enumerate(btn_data):
