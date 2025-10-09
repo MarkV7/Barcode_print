@@ -5,15 +5,42 @@ import textwrap
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont, ImageChops, ImageWin
 from gs1_datamatrix import GS1DataMatrixGenerator
-# import win32print
-# import win32ui
 import code128
-# Переписать файл printer_handler.py, таким образом, чтобы не использовать библиотеки win32print, win32ui,
-# но функционал и все методы с соответствующими аргументами остались, для совместимости с ранее созданным кодом извне
+from datetime import datetime # Нужен для сохранения тестовых файлов в Linux
+
 # НОВЫЕ ИМПОРТЫ ДЛЯ ZPL ПЕЧАТИ
 import socket
 import base64
 from typing import Optional, Dict
+
+try:
+    import fitz # PyMuPDF
+except ImportError:
+    msg="❌ WARNING: PyMuPDF (fitz) не установлен. Печать Ozon (PDF) будет невозможна. Установите командой 'pip install PyMuPDF'"
+    logging.info(msg)
+    print(msg)
+    fitz = None
+
+# УСЛОВНЫЙ ИМПОРТ ДЛЯ WINDOWS-СПЕЦИФИЧНЫХ МОДУЛЕЙ
+try:
+    import win32print
+    import win32ui
+    from PIL import ImageWin
+    IS_WINDOWS = True
+except ImportError:
+    # Под Linux импортируем заглушки
+    try:
+        import win32print
+        import win32ui
+        # ImageWin не нужен, но на всякий случай определяем класс-заглушку
+        class ImageWin:
+             class Dib:
+                 def __init__(self, *args, **kwargs): pass
+                 def draw(self, *args, **kwargs): print("[MOCK] Имитация отрисовки DIB.")
+        IS_WINDOWS = False
+    except ImportError:
+         print("❌ КРИТИЧЕСКАЯ ОШИБКА: Не удалось загрузить win32print/win32ui или заглушки. Печать невозможна.")
+         IS_WINDOWS = False # Убеждаемся, что флаг False
 
 # === Настройка логирования ===
 logging.basicConfig(
@@ -35,45 +62,147 @@ class LabelPrinter:
         self.label_size_mm = (58, 40)  # размер этикетки в мм
         self.RAW_PRINTER_PORT = 9100  # Стандартный порт для RAW печати ZPL
 
-        # НОВЫЙ МЕТОД: Прямая печать ZPL через сеть
+        # --- Внутренние методы для печати ---
+        # -----------------------------------------------------------------
+
+    def _convert_pdf_to_image(self, pdf_bytes: bytes, dpi: int = 300) -> Optional[Image.Image]:
+        """
+        Конвертирует PDF (в виде байтов) в объект PIL Image.
+        Требуется библиотека PyMuPDF (fitz).
+        """
+        if not fitz:
+            log("❌ Ошибка: Библиотека PyMuPDF (fitz) не найдена. Конвертация PDF невозможна.")
+            return None
+
+        try:
+            # 1. Открытие документа из байтов
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            if not doc:
+                log("❌ Не удалось открыть PDF-документ из байтов.")
+                return None
+
+            # 2. Рендеринг первой страницы
+            page = doc.load_page(0)
+
+            # Установка матрицы трансформации для нужного DPI
+            zoom_factor = dpi / 72.0  # 72 dpi - стандарт для PDF
+            matrix = fitz.Matrix(zoom_factor, zoom_factor)
+
+            # Получение пиксмапа (растеризация)
+            pix = page.get_pixmap(matrix=matrix, alpha=False)
+            doc.close()
+
+            # 3. Конвертация Pixmap в PIL Image
+            img_data = pix.tobytes("ppm")
+            image = Image.open(BytesIO(img_data))
+
+            # 4. Преобразование в монохромный режим (L: grayscale, 1: monochrome)
+            # Это критически важно для термопринтеров.
+            image = image.convert('L').convert('1')
+
+            log(f"✅ PDF успешно конвертирован в ч/б изображение {image.size} @ {dpi} DPI.")
+            return image
+
+        except Exception as e:
+            log(f"❌ Критическая ошибка при конвертации PDF в Image: {e}")
+            return None
+
     def print_zpl_network(self, zpl_code: str, host: str, port: int = 9100) -> bool:
         """
-        Универсальная прямая печать ZPL-кода на сетевой принтер через TCP-сокет.
-        Используется для Wildberries и Ozon FBS этикеток.
+        Отправляет ZPL код на локальный принтер.
+        Под Windows использует win32print (RAW data).
         """
-        try:
-            print(f"🖨️ Отправка ZPL на сетевой принтер {host}:{port}...")
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(5)  # Таймаут на подключение
-            s.connect((host, port))
 
-            # Отправляем ZPL-код как байты
-            s.sendall(zpl_code.encode('utf-8'))
-            s.close()
-            print("✅ ZPL-код успешно отправлен на печать.")
+        # ЛОГИКА ДЛЯ LINUX/ТЕСТИРОВАНИЯ
+        if not IS_WINDOWS:
+            log(f"ZPL-печать имитирована для принтера: {self.printer_name} (Linux/Test)")
+            try:
+                # Используем заглушку WritePrinter
+                win32print.WritePrinter(999, zpl_code.encode('utf-8'))
+                log("✅ ZPL-печать успешно имитирована (Linux Mock).")
+                return True
+            except Exception as e:
+                log(f"❌ Ошибка имитации печати ZPL (Linux Mock): {e}")
+                return False
+
+        # ОРИГИНАЛЬНАЯ ЛОГИКА ДЛЯ WINDOWS (Использование win32print с RAW)
+        printer_name = self.printer_name
+        hprinter = None
+
+        try:
+            log(f"Отправка ZPL-кода на локальный принтер Windows: {printer_name} (RAW)")
+
+            # Открытие принтера
+            hprinter = win32print.OpenPrinter(printer_name)
+
+            # Информация о документе (Тип RAW для ZPL)
+            DOC_INFO_1 = ("Этикетка ZPL", None, "RAW")
+
+            # Начало документа
+            job_id = win32print.StartDocPrinter(hprinter, 1, DOC_INFO_1)
+
+            # Отправка ZPL-кода
+            zpl_bytes = zpl_code.encode('utf-8')
+            win32print.WritePrinter(hprinter, zpl_bytes)
+
+            # Конец документа
+            win32print.EndDocPrinter(hprinter)
+
+            log(f"✅ ZPL-код успешно отправлен на локальный принтер {printer_name}.")
             return True
-        except socket.error as e:
-            # Принтер XPriner 365B должен быть настроен на работу по сети (Ethernet)
-            print(f"❌ Ошибка сетевой печати: {e}. Проверьте IP, порт и доступность принтера.")
-            return False
+
         except Exception as e:
-            print(f"❌ Неизвестная ошибка при ZPL печати: {e}")
+            log(f"❌ Ошибка локальной печати ZPL (Windows RAW): {e}")
             return False
+
+        finally:
+            if hprinter:
+                win32print.ClosePrinter(hprinter)
 
     # НОВЫЙ МЕТОД: Точка входа для печати WB/Ozon этикеток
-    def print_wb_ozon_label(self, label_base64_data: str, printer_host: str, printer_port: int = 9100):
-        """
-        Точка входа. Декодирует Base64 данные этикетки (предположительно ZPL) и отправляет на печать.
-        """
-        try:
-            # Декодируем Base64. ZPL-данные часто приходят в такой кодировке.
-            decoded_zpl_code = base64.b64decode(label_base64_data).decode('utf-8')
 
-            # Отправляем на печать
-            success = self.print_zpl_network(decoded_zpl_code, printer_host, printer_port)
-            return success
+    def print_wb_ozon_label(self, label_data_base64: str, *args, **kwargs) -> bool:
+        """
+        Универсальный метод печати для WB (ZPL) и Ozon (Base64-PDF).
+        Определяет формат данных и вызывает соответствующий низкоуровневый метод печати.
+        """
+        import base64
+
+        log(f"Начало универсальной печати на принтер: {self.printer_name}")
+
+        # 1. Попытка декодирования Base64 и анализ содержимого
+        try:
+            raw_data = base64.b64decode(label_data_base64)
+            # Пытаемся декодировать как строку (для ZPL)
+            data_str = raw_data.decode('utf-8', errors='ignore')
+
         except Exception as e:
-            print(f"❌ Ошибка декодирования или подготовки ZPL: {e}")
+            log(f"❌ Ошибка декодирования Base64: {e}")
+            return False
+
+        # 2. Определяем формат
+        if data_str.strip().startswith('^XA'):
+            # --- ZPL (Wildberries) ---
+            log("🔎 Формат: ZPL. Передаю в print_zpl_network.")
+            return self.print_zpl_network(data_str, host=None, port=None)
+
+        elif raw_data.startswith(b'%PDF'):
+            # --- Base64-PDF (Ozon) ---
+            log("🔎 Формат: Base64-PDF. Выполняю конвертацию в Image.")
+
+            # Конвертируем PDF байты в Image
+            image = self._convert_pdf_to_image(raw_data)
+
+            if image:
+                log("✅ Image успешно получен. Отправляю на печать (GDI).")
+                # print_on_windows принимает image=PIL.Image
+                return self.print_on_windows(image=image)
+            else:
+                log("❌ Конвертация Base64-PDF провалилась. Печать Ozon невозможна.")
+                return False
+
+        else:
+            log("❌ Неопознанный формат данных этикетки (ни ZPL, ни PDF).")
             return False
 
     # --- Внутренние методы из оригинального кода ---
@@ -406,95 +535,138 @@ class LabelPrinter:
         # 2. ЗАМЕНА WINDOWS-СПЕЦИФИЧНОГО print_on_windows
         # ----------------------------------------------
 
-    def print_on_windows(self, image_path: Optional[str] = None, image: Optional[Image.Image] = None,
-                         printer_host: Optional[str] = None):
+    def print_on_windows(self, image_path: Optional[str] = None, image=None):
         """
-        Кроссплатформенная замена print_on_windows.
-        Конвертирует изображение/файл в ZPL (^GFA) и отправляет на печать.
-        Сохраняет аргументы для обратной совместимости.
+        Печатает изображение (PNG/BMP) на локальный принтер (Windows GDI).
+        Используется для Ozon (после конвертации PDF -> Image).
         """
-        log("Метод print_on_windows вызван. Конвертация в ZPL ^GFA...")
 
-        # Определяем IP принтера (используем переданный или сохраненный)
-        host = printer_host if printer_host else self.PRINTER_HOST
+        # ЛОГИКА ДЛЯ LINUX/ТЕСТИРОВАНИЯ
+        if not IS_WINDOWS:
+            log(f"Имитация печати изображения на принтере: {self.printer_name} (Linux/Mock)")
 
-        if image_path:
-            # 1. Загрузка изображения из файла
+            if image:
+                # Сохраняем изображение в файл для проверки
+                try:
+                    test_dir = "test_prints"
+                    if not os.path.exists(test_dir): os.makedirs(test_dir)
+                    image.save(f"{test_dir}/{self.printer_name}_test_{datetime.now().strftime('%H%M%S')}.png")
+                    log("✅ Изображение сохранено в файл для проверки (Linux Mock).")
+                except Exception as e:
+                    log(f"❌ Ошибка сохранения тестового изображения: {e}")
+
+            # Используем заглушки для имитации процесса GDI
             try:
-                img = Image.open(image_path)
-            except FileNotFoundError:
-                log(f"❌ Ошибка: Файл не найден по пути: {image_path}")
-                return
+                hprinter = win32print.OpenPrinter(self.printer_name)
+                win32print.StartDocPrinter(hprinter, 1, ("Этикетка", None, "RAW"))
+                win32print.EndDocPrinter(hprinter)
+            finally:
+                win32print.ClosePrinter(hprinter)
+
+            return True
+
+        # ОРИГИНАЛЬНАЯ ЛОГИКА ДЛЯ WINDOWS (GDI/Image printing)
+        printer_name = self.printer_name
+        temp_path = None
+
+        if image_path is None and image is not None:
+            # Если передано изображение PIL, сохраняем его во временный файл BMP
+            try:
+                temp_path = os.path.join(os.getcwd(), 'temp_print_label.bmp')
+                image.save(temp_path, 'BMP')
+                image_path = temp_path
             except Exception as e:
-                log(f"❌ Ошибка загрузки изображения из файла: {e}")
-                return
-        elif image:
-            # 2. Используем переданный объект Image
-            img = image
-        else:
-            log("❌ Ошибка: Не передано ни изображение (объект), ни путь к файлу.")
-            return
+                log(f"❌ Ошибка сохранения временного файла BMP: {e}")
+                return False
 
-        # 3. Конвертация в ZPL
+        if image_path is None:
+            log("❌ Ошибка: Не передано ни пути к файлу, ни объекта изображения.")
+            return False
+
         try:
-            zpl_code = self._img_to_zpl_hex(img)
-            log(f"Изображение конвертировано в ZPL (^GFA). Длина ZPL: {len(zpl_code)} байт.")
+            hprinter = win32print.OpenPrinter(printer_name)
+
+            try:
+                # 1. Start printing (RAW setup)
+                win32print.StartDocPrinter(hprinter, 1, ("Этикетка", None, "RAW"))
+                win32print.StartPagePrinter(hprinter)
+
+                # 2. Load image and print via GDI
+                bmp = Image.open(image_path)
+                dib = ImageWin.Dib(bmp)
+
+                hdc = win32ui.CreateDC()
+                hdc.CreatePrinterDC(printer_name)
+                hdc.StartDoc("Этикетка")
+                hdc.StartPage()
+                # Печать растрового изображения
+                dib.draw(hdc.GetHandleOutput(), (0, 0, bmp.width, bmp.height))
+                hdc.EndPage()
+                hdc.EndDoc()
+                hdc.DeleteDC()
+
+                # 3. End printing
+                win32print.EndPagePrinter(hprinter)
+                win32print.EndDocPrinter(hprinter)
+
+            finally:
+                win32print.ClosePrinter(hprinter)
+
+            # 4. Clean up
+            if temp_path and os.path.exists(temp_path):
+                os.remove(temp_path)
+
+            log(f"✅ Изображение успешно отправлено на печать на принтер: {printer_name} (Windows).")
+            return True
+
         except Exception as e:
-            log(f"❌ Ошибка конвертации изображения в ZPL: {e}")
-            return
-
-        # 4. Отправка ZPL на печать
-        success = self.print_zpl_network(zpl_code, host, self.RAW_PRINTER_PORT)
-
-        if success:
-            log(f"✅ Изображение успешно отправлено на печать на {host} (через ZPL ^GFA).")
-        else:
-            log(f"❌ Печать изображения на {host} не удалась.")
+            log(f"❌ Ошибка печати (Windows GDI): {str(e)}")
+            return False
 
     # ----------------------------------------------
-    # def print_on_windows_old(self, image_path=None, image=None):
-    #     """
-    #     Пытаемся избавиться от этого метода и привязке к Windows !!!!
-    #     Отправляет изображение этикетки на печать.
-    #     Можно передать либо путь к файлу, либо объект PIL.Image.
-    #     """
-    #     temp_path = None
-    #     if image is not None:
-    #         temp_path = "__temp_label_print__.png"
-    #         image.save(temp_path)
-    #         image_path = temp_path
-    #
-    #     try:
-    #         printer_name = self.printer_name if self.printer_name != 'по умолчанию' else win32print.GetDefaultPrinter()
-    #         print(f"🖨️ Печать на принтере: {printer_name}")
-    #
-    #         hprinter = win32print.OpenPrinter(printer_name)
-    #         try:
-    #             win32print.StartDocPrinter(hprinter, 1, ("Этикетка", None, "RAW"))
-    #             win32print.StartPagePrinter(hprinter)
-    #
-    #             bmp = Image.open(image_path)
-    #             dib = ImageWin.Dib(bmp)
-    #
-    #             hdc = win32ui.CreateDC()
-    #             hdc.CreatePrinterDC(printer_name)
-    #             hdc.StartDoc("Этикетка")
-    #             hdc.StartPage()
-    #             dib.draw(hdc.GetHandleOutput(), (0, 0, bmp.width, bmp.height))
-    #             hdc.EndPage()
-    #             hdc.EndDoc()
-    #             hdc.DeleteDC()
-    #
-    #             win32print.EndPagePrinter(hprinter)
-    #             win32print.EndDocPrinter(hprinter)
-    #         finally:
-    #             win32print.ClosePrinter(hprinter)
-    #
-    #         if temp_path and os.path.exists(temp_path):
-    #             os.remove(temp_path)
-    #
-    #     except Exception as e:
-    #         print("❌ Ошибка печати:", str(e))
+    def print_on_windows_old(self, image_path=None, image=None):
+        """
+        Пытаемся избавиться от этого метода и привязке к Windows !!!!
+        Отправляет изображение этикетки на печать.
+        Можно передать либо путь к файлу, либо объект PIL.Image.
+        """
+        temp_path = None
+        if image is not None:
+            temp_path = "__temp_label_print__.png"
+            image.save(temp_path)
+            image_path = temp_path
+
+        try:
+            printer_name = self.printer_name if self.printer_name != 'по умолчанию' else win32print.GetDefaultPrinter()
+            print(f"🖨️ Печать на принтере: {printer_name}")
+
+            hprinter = win32print.OpenPrinter(printer_name)
+            try:
+                win32print.StartDocPrinter(hprinter, 1, ("Этикетка", None, "RAW"))
+                win32print.StartPagePrinter(hprinter)
+
+                bmp = Image.open(image_path)
+                dib = ImageWin.Dib(bmp)
+
+                hdc = win32ui.CreateDC()
+                hdc.CreatePrinterDC(printer_name)
+                hdc.StartDoc("Этикетка")
+                hdc.StartPage()
+                dib.draw(hdc.GetHandleOutput(), (0, 0, bmp.width, bmp.height))
+                hdc.EndPage()
+                hdc.EndDoc()
+                hdc.DeleteDC()
+
+                win32print.EndPagePrinter(hprinter)
+                win32print.EndDocPrinter(hprinter)
+            finally:
+                win32print.ClosePrinter(hprinter)
+
+            if temp_path and os.path.exists(temp_path):
+                os.remove(temp_path)
+
+        except Exception as e:
+            print("❌ Ошибка печати:", str(e))
 
     # --- API для работы с этикетками ---
     def print_ozon_label(self, barcode_value, product_info):

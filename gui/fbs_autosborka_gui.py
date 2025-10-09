@@ -71,7 +71,6 @@ class FBSMode(ctk.CTkFrame):
         self.pending_barcode = None      # для хранения штрихкода между вводами
         self.supplies = []               # Список поставок
         self.selected_supply_id = None   # ID выбранной поставки
-        self.PRINTER_HOST = "192.168.1.100"  # Замените на фактический IP принтера
         self.api = WildberriesFBSAPI(self.app_context.wb_api_token)
         # НОВЫЕ АТРИБУТЫ
         self.api_ozon = OzonFBSAPI(self.app_context.ozon_client_id, self.app_context.ozon_api_key)
@@ -822,9 +821,12 @@ class FBSMode(ctk.CTkFrame):
     # В конец класса FBSMode
 
     def finalize_ozon_assembly(self, posting_number: str):
-        """Переводит Ozon заказ в сборку и печатает этикетку ZPL."""
+        """
+        Финализирует Ozon заказ: переводит в статус 'Собирается' и печатает этикетку.
+        """
 
-        # PRINTER_HOST = "192.168.1.100"  # Замените на фактический IP принтера
+        # Получаем имя выбранного принтера из контекста приложения
+        printer_target = getattr(self.app_context, "printer_name", "по умолчанию")
 
         # 1. Перевод заказа в статус "В сборке"
         try:
@@ -839,42 +841,69 @@ class FBSMode(ctk.CTkFrame):
         try:
             self.show_log("Ozon API: Запрос этикетки сборочного задания (Base64)...")
             label_base64_data = self.api_ozon.get_stickers(posting_number)
+            if not label_base64_data:
+                self.show_log("❌ Ozon API не вернул данные этикетки.", is_error=True)
+                return
 
-            if self.label_printer.print_wb_ozon_label(label_base64_data, self.PRINTER_HOST):
-                self.show_log(f"✅ Этикетка для {posting_number} успешно отправлена на ZPL-печать.")
+            if self.label_printer.print_wb_ozon_label(label_base64_data, printer_target):
+                self.show_log(f"✅ Этикетка Ozon для {posting_number} успешно отправлена на печать на принтер: {printer_target}.")
                 self.fbs_df.loc[self.fbs_df["Номер заказа"] == posting_number, "Статус обработки"] = "Обработан"
                 self.active_ozon_assembly = None
                 self.save_data_to_context()
                 self.update_table()
             else:
-                self.show_log("❌ Прямая ZPL-печать не удалась. Проверьте принтер/IP.", is_error=True)
+                self.show_log("❌ Прямая печать этикетки Ozon не удалась. Проверьте настройки или логику PDF-конвертации.", is_error=True)
 
         except Exception as e:
-            self.show_log(f"❌ Ошибка получения или печати этикетки Ozon: {e}", is_error=True)
+            self.show_log(f"❌ Критическая ошибка при работе с Ozon API или печати: {e}", is_error=True)
 
     def finalize_wb_assembly(self, row):
         """Финализирует Wildberries заказ и печатает этикетку ZPL."""
 
-        # PRINTER_HOST = "192.168.1.100"  # Замените на фактический IP принтера
         order_id = row["Номер заказа"]
 
-        # 1. Добавление в поставку (должно быть реализовано отдельно или в другом месте)
-        # Здесь мы пропускаем этот шаг и сразу запрашиваем стикер
+        # 1. Получение целевого принтера из контекста приложения
+        # Используем имя выбранного локального принтера.
+        printer_target = getattr(self.app_context, "printer_name", "по умолчанию")
+
+        # Проверка, что поставка выбрана/создана.
+        # WB требует добавления заказа в поставку перед запросом стикера.
+        supply_id = getattr(self.app_context, "wb_fbs_supply_id", None)
+        if not supply_id:
+            self.show_log("❌ ОШИБКА: Не выбрана/не создана поставка WB. Создайте ее перед сборкой.", is_error=True)
+            return
+
+        # 1.1 Добавление заказа в поставку (критический шаг для WB)
+        try:
+            self.show_log(f"WB API: Добавление заказа {order_id} в поставку {supply_id}...")
+            self.api.add_orders_to_supply(supply_id, [order_id])
+            self.show_log(f"✅ Заказ {order_id} успешно добавлен в поставку.")
+        except Exception as e:
+            self.show_log(f"❌ Ошибка добавления заказа {order_id} в поставку: {e}", is_error=True)
+            return
 
         # 2. Получение и прямая ZPL печать этикетки
         try:
             self.show_log("WB API: Запрос ZPL этикетки...")
+            # Запрашиваем стикер в формате ZPL
             stickers_response = self.api.get_stickers([order_id], type="zpl", width=58, height=40)
 
             stickers = stickers_response.get('stickers')
+
+            # Проверка, что стикер получен и содержит данные
             if stickers and isinstance(stickers, list) and 'file' in stickers[0]:
+                # 'file' содержит Base64-строку ZPL-кода
                 label_base64_data = stickers[0]['file']
 
-                if self.label_printer.print_wb_ozon_label(label_base64_data, self.PRINTER_HOST):
-                    self.show_log(f"✅ Этикетка WB для {order_id} успешно отправлена на ZPL-печать.")
+                # print_wb_ozon_label сам определяет, что это ZPL, и отправит его на печать.
+                if self.label_printer.print_wb_ozon_label(label_base64_data, printer_target):
+                    self.show_log(
+                        f"✅ Этикетка WB для {order_id} успешно отправлена на ZPL-печать на принтер: {printer_target}.")
                 else:
-                    self.show_log("❌ Прямая ZPL-печать не удалась. Проверьте принтер/IP.", is_error=True)
+                    self.show_log("❌ Прямая ZPL-печать не удалась. Проверьте соединение с принтером или его имя.",
+                                  is_error=True)
             else:
-                self.show_log("❌ Не удалось получить ZPL-стикер WB заказа.", is_error=True)
+                self.show_log("❌ WB API не вернул данные этикетки в ожидаемом формате.", is_error=True)
+
         except Exception as e:
-            self.show_log(f"❌ Ошибка при получении стикера WB: {e}", is_error=True)
+            self.show_log(f"❌ Критическая ошибка при работе с WB API или печати: {e}", is_error=True)
