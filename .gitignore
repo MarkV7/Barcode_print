@@ -1,5 +1,8 @@
 .env
-.venv
+.venv/
 win32ui.py
 win32print.py
 test_mocks.py
+__pycache__/
+debug_log.txt
+*.pyc
