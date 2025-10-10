@@ -492,7 +492,7 @@ class FBSMode(ctk.CTkFrame):
             return
 
         first_match = matches.iloc[0]
-        marketplace = first_match["Маркетплейс"]
+        marketplace = first_match["Служба доставки"]
         posting_number = first_match["Номер заказа"]
 
         # --- ЛОГИКА Ozon: МНОГОТОВАРНАЯ СБОРКА ---
