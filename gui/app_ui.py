@@ -12,6 +12,8 @@ from gui.return_sklad_gui import ReturnMode
 from gui.ozon_gui import OzonMode
 from gui.wb_gui import WildberriesMode
 from gui.fbs_autosborka_gui import FBSMode
+from gui.fbs_wb_gui import FBSModeWB
+from gui.fbs_ozon_gui import FBSModeOzon
 
 CONFIG_FILE = "config.json"
 CONTEXT_FILE = 'app_context.pkl'
@@ -24,7 +26,7 @@ class AppUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Склад Ozon / Wildberries")
-        self.root.geometry("1000x600")
+        self.root.geometry("1600x600")
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -64,7 +66,9 @@ class AppUI:
             ("Возврат на склад", self.show_return),
             ("ФБО Ozon", self.show_ozon),
             ("ФБО Wildberries", self.show_wildberries),
-            ("Автосборка ФБС", self.show_autosborka_fbs),
+            #("Автосборка ФБС", self.show_autosborka_fbs),
+            ("Wildberries ФБС", self.show_wildberries_fbs),
+            ("Ozon ФБС", self.show_ozon_fbs),
             ("Настройки", self.show_settings),
             ("Выход", self.on_close),
         ]
@@ -176,6 +180,22 @@ class AppUI:
     def show_autosborka_fbs(self):
         self._clear_content()
         frame = FBSMode(
+            self.content_frame, self.font_normal, self.context
+        )
+        frame.pack(fill="both", expand=True)
+        self.current_frame = frame
+
+    def show_wildberries_fbs(self):
+        self._clear_content()
+        frame = FBSModeWB(
+            self.content_frame, self.font_normal, self.context
+        )
+        frame.pack(fill="both", expand=True)
+        self.current_frame = frame
+
+    def show_ozon_fbs(self):
+        self._clear_content()
+        frame = FBSModeOzon(
             self.content_frame, self.font_normal, self.context
         )
         frame.pack(fill="both", expand=True)

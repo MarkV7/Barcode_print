@@ -125,6 +125,8 @@ class DatabaseMode(ctk.CTkFrame):
         self.table = EditableDataTable(
             self.table_frame,
             dataframe=self.df,
+            columns=self.df.columns.tolist(),  # <--- 1. ПЕРЕДАЕМ СПИСОК КОЛОНОК
+            on_row_select=None,                # <--- 2. ПЕРЕДАЕМ None (или lambda row: None)
             max_rows=5000,
             header_font=("Segoe UI", 14, "bold"),
             cell_font=("Segoe UI", 14),

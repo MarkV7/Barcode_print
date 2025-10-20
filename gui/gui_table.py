@@ -10,6 +10,7 @@ class EntryPopup(ttk.Entry):
         super().__init__(parent.tree, **kw)  # Размещается на Treeview
         self.parent = parent
         self.tree = parent.tree
+
         self.row_id = row_id
         self.col_index = col_index
 
@@ -95,10 +96,10 @@ class EntryPopup(ttk.Entry):
 
 
 class EditableDataTable(ctk.CTkFrame):
-    def __init__(self, parent, dataframe,
+    def __init__(self, parent, dataframe, columns, on_row_select,
                  max_rows=None, header_font=None, cell_font=None,
                  show_statusbar=True, readonly=False,
-                 on_edit_start=None, on_edit_end=None, **kwargs):
+                 on_edit_start=None, on_edit_end=None, textlbl = "Таблица:",**kwargs):
         super().__init__(parent, **kwargs)
         self.dataframe = dataframe.copy()
         self.original_df = dataframe.copy()  # Сохраняем оригинал для сравнения
@@ -107,9 +108,13 @@ class EditableDataTable(ctk.CTkFrame):
         self.header_font = header_font or ("Segoe UI", 14, "bold")
         self.cell_font = cell_font or ("Segoe UI", 14)
         self.show_statusbar = show_statusbar
+        self.columns = columns  # 💡 Сохраняем список колонок
+        self.on_row_select = on_row_select # Сохраняем колбэк
         self.readonly = readonly
         self.on_edit_start = on_edit_start
         self.on_edit_end = on_edit_end
+        self.textlbl = textlbl
+        self._last_selected_iid = None
 
         # Настройка стиля
         self.style = ttk.Style()
@@ -117,6 +122,9 @@ class EditableDataTable(ctk.CTkFrame):
 
         # Создание виджетов
         self._create_widgets()
+
+        # 💡 ОБЯЗАТЕЛЬНАЯ ПРИВЯЗКА СОБЫТИЯ
+        self.tree.bind('<<TreeviewSelect>>', self._on_tree_select)
 
     def _configure_styles(self):
         self.style.theme_use("default")  # <-- замена на clam
@@ -130,7 +138,8 @@ class EditableDataTable(ctk.CTkFrame):
                      lightcolor="lightgray",   # <-- важный параметр
                      darkcolor="lightgray",    # <-- важный параметр
                      relief="solid",)           # <-- важный параметр
-        
+
+
         # Добавляем границы для ячеек — имитация сетки Excel
         self.style.configure("Treeview", rowheight=25, fieldbackground="white")
         self.style.map("Treeview", background=[('selected', '#4a6fae')])
@@ -170,7 +179,7 @@ class EditableDataTable(ctk.CTkFrame):
         # Label для таблицы
         self.table_label = ctk.CTkLabel(
             button_frame,
-            text="Таблица:",
+            text=self.textlbl,
             font=ctk.CTkFont(size=14, weight="bold"),
             anchor="w"
         )
@@ -424,6 +433,46 @@ class EditableDataTable(ctk.CTkFrame):
 
         print(f"Скопировано: {copied_text}")
 
+    # gui/gui_table.py (Внутри класса EditableDataTable)
+
+    def update_data(self, new_df: pd.DataFrame):
+        """
+        Очищает Treeview и заполняет его данными из нового DataFrame.
+        Использует первый элемент списка values для порядкового номера.
+        """
+        # 1. Очистка Treeview
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        # 2. Обновляем внутренний DataFrame
+        if new_df.empty:
+            self.displayed_df = new_df.copy()
+        else:
+            # Преобразуем все данные в строки, чтобы Treeview гарантированно их отобразил.
+            self.displayed_df = new_df.head(self.max_rows).copy().astype(str)
+
+            # 3. Заменяем NaNs на пустые строки
+        self.displayed_df = self.displayed_df.fillna('')
+
+        # 4. Заполняем Treeview новыми данными
+        for index, row in self.displayed_df.iterrows():
+            # --- КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: ПРАВИЛЬНЫЙ ФОРМАТ VALUES ---
+            # row_list = [№ строки] + [Значение колонки 1, Значение колонки 2, ...]
+            row_list = [str(index + 1)] + row.tolist()
+
+            self.tree.insert(
+                parent='',
+                index='end',
+                iid=str(index),
+                values=row_list  # Вставляем список с номером строки на первом месте
+            )
+
+        # 5. Обновляем скроллбар
+        try:
+            self._update_scrollbar()
+        except AttributeError:
+            pass
+
     def delete_selected_row(self, event=None):
         if self.readonly:
             return
@@ -647,3 +696,38 @@ class EditableDataTable(ctk.CTkFrame):
             del self.entry_popup
         except (AttributeError, KeyError):
             pass
+
+        # /home/markv7/PycharmProjects/Barcode_print/gui/gui_table.py (EditableDataTable._on_tree_select)
+
+    def _on_tree_select(self, event):
+        """
+        Обрабатывает событие выбора строки, проверяя, что выбор фактически изменился,
+        чтобы подавить промежуточные события 'None'.
+        """
+        # 1. Получаем текущий набор выбранных элементов (строковые ID, список)
+        selected_items = self.tree.selection()
+        current_iid = selected_items[0] if selected_items else None
+
+        # 2. Если текущий выбранный ID совпадает с предыдущим, просто выходим.
+        # Это предотвращает дублирующие вызовы, если пользователь кликнул на уже выбранную строку.
+        if current_iid == self._last_selected_iid:
+            return
+
+        # 3. Обновляем ID последнего выбранного элемента
+        self._last_selected_iid = current_iid
+
+        # 4. Определяем числовой индекс для передачи в колбэк
+        selected_index = None
+        if current_iid:
+            try:
+                # Преобразование IID (строкового ID) в числовой индекс (0, 1, 2...)
+                selected_index = int(current_iid)
+            except ValueError:
+                # Если IID не число (например, служебные IID), оставляем None
+                pass
+
+        # 5. Вызываем внешний колбэк
+        if self.on_row_select:
+            # Если пользователь кликнул на новую строку (2) -> вызов с 2.
+            # Если пользователь кликнул в пустое место -> вызов с None.
+            self.on_row_select(selected_index)

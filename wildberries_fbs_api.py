@@ -26,6 +26,29 @@ class WildberriesFBSAPI:
         response.raise_for_status()
         return response.json()
 
+    def get_info_about_orders(self, params: Optional[Dict[str, Any]] = None) -> Dict:
+        """
+        Метод возвращает информацию о сборочных заданиях без их актуального статуса.
+        Можно получить данные за заданный период, максимум 30 календарных дней одним запросом.
+        params: параметры фильтрации (например, dateFrom, flag, etc)
+        Возвращает: dict с данными заказов
+        """
+        url = f"{self.BASE_URL}/api/v3/orders"
+        response = self.session.get(url, params=params)
+        response.raise_for_status()
+        return response.json()
+
+    def get_status_orders(self, params: Dict) -> Dict:
+        """
+        Метод возвращает статусы сборочных заданий по их ID
+        params: Dict со списком (целых чисел)
+        Возвращает: dict с данными заказов
+        """
+        url = f"{self.BASE_URL}/api/v3/orders/status"
+        response = self.session.post(url, json=params)
+        # response.raise_for_status()
+        return response.json()
+
     def get_supplies(self, params: Optional[Dict[str, Any]] = None) -> Dict:
         """
         Получить список поставок.
@@ -52,7 +75,7 @@ class WildberriesFBSAPI:
         """
         Получить стикеры для сборочных заданий (FBS).
         order_ids: список ID сборочных заданий (orders)
-        type: формат стикера ("png", "pdf", "zpl")
+        type: формат стикера ("png", "svg", "zplv", "zplh")
         width: ширина стикера
         height: высота стикера
         Возвращает: dict с данными стикеров
@@ -63,15 +86,27 @@ class WildberriesFBSAPI:
         response.raise_for_status()
         return response.json()
 
-    def add_orders_to_supply(self, supply_id: str, order_ids: list) -> Dict:
+    def add_order_to_supply(self, supply_id: str, order_id: int) -> Dict:
         """
         Добавить сборочные задания в поставку.
         supply_id: ID поставки
         order_ids: список ID сборочных заданий (orders)
         Возвращает: dict с результатом
         """
-        url = f"{self.BASE_URL}/api/v3/supplies/{supply_id}/orders"
-        data = {"orders": order_ids}
-        response = self.session.post(url, json=data)
+        url = f"{self.BASE_URL}/api/v3/supplies/{supply_id}/orders/{order_id}"
+        data = {"orders": order_id}
+        response = self.session.patch(url)
+        response.raise_for_status()
+        return response.json()
+
+    def close_supply_complete(self, supplyId: str) -> Dict:
+        """
+        Метод закрывает поставку и переводит все сборочные задания в ней в статус complete — в доставке.
+        После закрытия поставки добавить новые сборочные задания к ней нельзя.
+        supplyId: ID поставки
+        Возвращает: dict с результатом
+        """
+        url = f"{self.BASE_URL}/api/v3/supplies/{supplyId}/deliver"
+        response = self.session.patch(url)
         response.raise_for_status()
         return response.json()

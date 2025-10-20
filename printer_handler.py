@@ -7,7 +7,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageChops, ImageWin
 from gs1_datamatrix import GS1DataMatrixGenerator
 import code128
 from datetime import datetime # Нужен для сохранения тестовых файлов в Linux
-
+import sys
 # НОВЫЕ ИМПОРТЫ ДЛЯ ZPL ПЕЧАТИ
 import socket
 import base64
@@ -21,26 +21,42 @@ except ImportError:
     print(msg)
     fitz = None
 
+# === УСЛОВНЫЙ ИМПОРТ И ФЛАГ ===
+IS_WINDOWS = sys.platform == 'win32'
 # УСЛОВНЫЙ ИМПОРТ ДЛЯ WINDOWS-СПЕЦИФИЧНЫХ МОДУЛЕЙ
-try:
-    import win32print
-    import win32ui
-    from PIL import ImageWin
-    IS_WINDOWS = True
-except ImportError:
-    # Под Linux импортируем заглушки
+if IS_WINDOWS:
+    # 1. На Windows импортируем настоящие библиотеки
     try:
         import win32print
         import win32ui
-        # ImageWin не нужен, но на всякий случай определяем класс-заглушку
-        class ImageWin:
-             class Dib:
-                 def __init__(self, *args, **kwargs): pass
-                 def draw(self, *args, **kwargs): print("[MOCK] Имитация отрисовки DIB.")
-        IS_WINDOWS = False
+        from PIL import ImageWin
     except ImportError:
-         print("❌ КРИТИЧЕСКАЯ ОШИБКА: Не удалось загрузить win32print/win32ui или заглушки. Печать невозможна.")
-         IS_WINDOWS = False # Убеждаемся, что флаг False
+        # Если даже на Windows не установлен pywin32, переключаемся на ZPL
+        IS_WINDOWS = False
+        print("❌ WARNING: pywin32 не найден, печать RAW невозможна. Будет использован ZPL/Socket.")
+else:
+    # 2. На Linux/macOS: Импортируем заглушки из файлов win32print.py и win32ui.py
+    try:
+        # ВАЖНО: Добавляем текущую директорию, чтобы найти файлы-заглушки
+        # Это помогает Python найти win32print.py в локальной папке
+        if '.' not in sys.path:
+            sys.path.append('.')
+
+        import win32print  # Это должен быть ваш win32print.py
+        import win32ui  # Это должен быть ваш win32ui.py
+
+
+        # Определяем заглушку ImageWin, если она используется в print_on_windows
+        class ImageWin:
+            class Dib:
+                def __init__(self, *args, **kwargs): pass
+
+                def draw(self, *args, **kwargs): print("[MOCK] Имитация отрисовки DIB.")
+        print("✅ Linux: Заглушки win32print/win32ui успешно загружены.")
+
+    except ImportError as e:
+        print(f"❌ КРИТИЧЕСКАЯ ОШИБКА: Не удалось найти файлы-заглушки win32print.py/win32ui.py: {e}")
+        # Ошибка импорта здесь не должна быть SIGSEGV, но укажет, что файлов нет
 
 # === Настройка логирования ===
 logging.basicConfig(
@@ -198,7 +214,7 @@ class LabelPrinter:
                 # print_on_windows принимает image=PIL.Image
                 return self.print_on_windows(image=image)
             else:
-                log("❌ Конвертация Base64-PDF провалилась. Печать Ozon невозможна.")
+                log("❌ Конвертация Base64-PDF провалилась. Печать  невозможна.")
                 return False
 
         else:

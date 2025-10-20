@@ -1,15 +1,18 @@
 import tkinter as tk
 import customtkinter as ctk
+import sys # <-- Добавить sys
 
 # Попытка импорта Windows-специфичных библиотек
-try:
-    import win32print
-    # import win32ui  # win32ui не нужен в settings_gui.py
-    IS_WINDOWS = True
-except ImportError:
-    # Если импорт не удался (т.е. мы в Linux)
-    # Здесь мы полагаемся на нашу заглушку win32print.py
-    import win32print  # Импортируем заглушку, если она в PATH
+if sys.platform == 'win32':
+    try:
+        import win32print
+        IS_WINDOWS = True
+    except ImportError:
+        IS_WINDOWS = False
+        print("❌ WARNING: pywin32 не найден.")
+else:
+    # На Linux мы полагаемся, что заглушка уже загружена через sys.path
+    import win32print # Импортируем заглушку, которую Python найдет в текущей папке
     IS_WINDOWS = False
 
 class SettingsMode(ctk.CTkFrame):
