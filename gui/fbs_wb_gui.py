@@ -338,11 +338,14 @@ class FBSModeWB(ctk.CTkFrame):
         # print(self.fbs_df['Штрихкод'].astype(str))
         # 1. Поиск: ищем  Штрихкод производителя в текущих заказах
         matches = self.fbs_df[self.fbs_df['Штрихкод'].astype(str) == str(self.current_barcode)].copy()
+        row_index = 0
 
         if not matches.empty:
             # --- Логика Сборки по сканированию (автоматическая) ---
             row_index = matches.index[0]
+            print('row_index',row_index)
             row = self.fbs_df.loc[row_index]
+            self.selected_row_index = row_index
            # --- ДОБАВЛЕНИЕ ЛОГИКИ ВЫДЕЛЕНИЯ И ФОКУСА - --
 
             # Прокручиваем таблицу к найденной строке
@@ -353,7 +356,7 @@ class FBSModeWB(ctk.CTkFrame):
 
             # ---------------------------------------------
 
-            self._select_row_by_index(row_index)
+            self.data_table.select_row(row_index)
             play_success_scan_sound()
 
         # 2. Несовпадение: возможно, это новый ШК или артикул для добавления
@@ -361,8 +364,11 @@ class FBSModeWB(ctk.CTkFrame):
             # self.handle_unmatched_barcode(self.current_barcode) Этот метод реализовать позже
             self.show_log(f"Несовпадение: возможно, это новый {self.current_barcode} ШК или артикул ")
 
-        self.editing = False
-        self.start_auto_focus()
+        print('row_index', row_index)
+        # self._select_row_by_index(row_index)
+        # self.editing = True
+        # self.start_auto_focus()
+
 
     def handle_cis_input(self, input_value: str):
         """Обрабатывает ввод КИЗ (Честный знак). (Требование 3)"""

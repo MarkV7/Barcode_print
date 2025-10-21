@@ -401,6 +401,25 @@ class EditableDataTable(ctk.CTkFrame):
         # Размещаем поверх ячейки
         self.entry_popup.place(x=x, y=y, width=width, height=height)
 
+
+
+        # ... (внутри класса EditableDataTable)
+
+    def select_row(self, df_index):
+        """Выделяет строку по индексу DataFrame, устанавливает фокус и прокручивает к ней."""
+        # Индексы DataFrame используются как строковые IID в Treeview
+        item_id = str(df_index)
+        # 1. Сброс предыдущего выделения
+        self.tree.selection_set()
+        # 2. Выделение новой строки
+        self.tree.selection_set(item_id)
+        # 3. Установка фокуса (делает строку активной/текущей)
+        self.tree.focus(item_id)
+        # 4. 💡 КРИТИЧНОЕ ИЗМЕНЕНИЕ: Прокрутка Treeview к элементу, чтобы он был виден
+        self.tree.see(item_id)
+        # Обновляем внутреннюю переменную для предотвращения дублирующих вызовов
+        self._last_selected_iid = item_id
+
     def on_row_selected(self, event=None):
         selected = self.tree.selection()
         if selected:
