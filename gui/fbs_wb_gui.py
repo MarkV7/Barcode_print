@@ -1,4 +1,4 @@
-# from typing import Dict, List, Optional
+from typing import Dict, List, Optional
 import pandas as pd
 # import numpy as np
 import customtkinter as ctk
@@ -6,6 +6,7 @@ import os
 import re
 from datetime import datetime
 from tkinter import messagebox
+import tkinter.filedialog as fd
 import easygui as eg
 from pandas.core.interchange.dataframe_protocol import DataFrame
 
@@ -34,11 +35,12 @@ class FBSModeWB(ctk.CTkFrame):
         self.focus_timer_id = None
         self.clear_timer_id = None
         self.current_barcode = None
+        self.marking_db = {}  # База данных артикул+размер -> штрихкод
         self.columns=[
                 "Номер заказа", "Служба доставки", "Покупатель", "Бренд", "Цена",
                 # "Статус доставки",
                 "Артикул поставщика", "Количество", "Размер",
-                "Штрихкод", "Код маркировки", "Номер поставки", "Статус обработки"
+                "Штрихкод", 'Штрихкод WB', "Код маркировки", "Номер поставки", "Статус обработки"
             ]
         self.define_status = ('indefinite','new','confirm','complete','cancel')
         # --- Данные ---
@@ -92,6 +94,7 @@ class FBSModeWB(ctk.CTkFrame):
         saved_supply_id = getattr(self.app_context, "wb_fbs_supply_id", "")
         self.wb_supply_id_var = ctk.StringVar(value=str(saved_supply_id))
         self.wb_supply_id_var.trace_add("write", self.update_supply_id)
+        self.df_barcode_WB = self.app_context.df_barcode_WB
 
         # --- UI элементы ---
         self.scan_entry = None
@@ -105,6 +108,8 @@ class FBSModeWB(ctk.CTkFrame):
         self.supply_combobox = None
         self.selected_row_index = None  # Для хранения выбранной строки
         self.table_label = None
+        self.check_var = None
+        self.checkbox = None
 
         self.setup_ui()
 
@@ -181,25 +186,37 @@ class FBSModeWB(ctk.CTkFrame):
         control_panel.grid_columnconfigure(0, weight=1)
 
         row = 0
-
+        ctk.CTkButton(control_panel, text="Загрузить заказы из Excel",
+                      command=self.load_orders, font=self.font,
+                      # fg_color="blue",
+                      state="normal").grid(row=row, column=0, padx=10, pady=(10, 5), sticky="ew")
+        row += 1
         # 1. Кнопка "Загрузить товары" (Требование 5 - смещено вверх)
-        ctk.CTkButton(control_panel, text="🚀 Загрузить Сборочные Задания", command=self.load_wb_orders, font=self.font,
+        ctk.CTkButton(control_panel, text="Загрузить заказы из WB", command=self.load_wb_orders, font=self.font,
                       fg_color="blue", state="normal").grid(row=row, column=0, padx=10, pady=(10, 5), sticky="ew")
         row += 1
         ctk.CTkButton(control_panel, text="Обновить статусы сборки", command=self.update_orders_statuses_from_api, font=self.font,
                       fg_color="gray", state="normal").grid(row=row, column=0, padx=10, pady=(10, 5), sticky="ew")
         row += 1
         # --- Разделитель ---
-        ctk.CTkFrame(control_panel, height=2, fg_color="gray").grid(row=row, column=0, padx=10, pady=10, sticky="ew")
-        row += 1
+        # ctk.CTkFrame(control_panel, height=2, fg_color="gray").grid(row=row, column=0, padx=10, pady=10, sticky="ew")
+
 
         # 2. Поле сканирования Штрихкода Товара
-        ctk.CTkLabel(control_panel, text="Сканирование товара:", font=self.font).grid(row=row, column=0, padx=10,
-                                                                                      pady=(10, 0), sticky="w")
+        ctk.CTkLabel(control_panel, text="Поиск товара по ШК:", font=self.font).grid(row=row, column=0, padx=10,
+                                                                               pady=(10, 0), sticky="w")
         row += 1
         self.scan_entry = ctk.CTkEntry(control_panel, font=self.font)
         self.scan_entry.bind('<Return>', lambda event: self.handle_barcode_input(self.scan_entry.get()))
         self.scan_entry.grid(row=row, column=0, padx=10, pady=(0, 10), sticky="ew")
+        row += 1
+
+        # Создание переменной для контроля состояния
+        self.check_var = ctk.StringVar(value="on")
+        # Создание чекбокса
+        self.checkbox = ctk.CTkCheckBox(control_panel, text="АвтоПечать", command=self.checkbox_event, variable=self.check_var,
+                                             onvalue="on", offvalue="off")
+        self.checkbox.grid(row=row, column=0, padx=10, pady=0, sticky="w")
         row += 1
 
         # 3. Поле сканирования КИЗ (Маркировки) (Требование 3)
@@ -212,19 +229,31 @@ class FBSModeWB(ctk.CTkFrame):
         row += 1
 
         # 4. Кнопка "Собрать Заказ" (Ручная сборка) (Требование 1)
-        self.assembly_button = ctk.CTkButton(control_panel, text="Добавить сборочное задание к поставке",
+        self.assembly_button = ctk.CTkButton(control_panel, text="Добавить к поставке",
                                              command=self.finalize_manual_assembly, font=self.font, fg_color="green",
                                              state="normal")
         self.assembly_button.grid(row=row, column=0, padx=10, pady=10, sticky="ew")
         row += 1
 
+        # 7. Кнопка "Печать Этикетки" (Требование 2)
+        self.print_button = ctk.CTkButton(control_panel, text="🖨️ Печать Этикетки",
+                                          command=self.print_label_from_button, font=self.font, fg_color="gray",
+                                          state="disabled")
+        self.print_button.grid(row=row, column=0, padx=10, pady=10, sticky="ew")
+        row += 1
         # --- Разделитель ---
         ctk.CTkFrame(control_panel, height=2, fg_color="gray").grid(row=row, column=0, padx=10, pady=10, sticky="ew")
         row += 1
 
         # 5. Кнопка "Создать поставку" (Требование 4)
         ctk.CTkButton(control_panel, text="📦 Создать Поставку WB", command=self.create_new_supply, font=self.font).grid(
-            row=row, column=0, padx=10, pady=(0, 5), sticky="ew")
+            row=row, column=0, padx=10, pady=10, sticky="ew")
+        row += 1
+
+        # 5. Кнопка "Обновить активные Поставки"
+        ctk.CTkButton(control_panel, text="Обновить активные Поставки", command=self.order_relation_supply,
+                      font=self.font, fg_color="gray").grid(
+                    row=row, column=0, padx=10, pady=10, sticky="ew")
         row += 1
 
         # 6. Выбор/Просмотр Поставки
@@ -237,12 +266,7 @@ class FBSModeWB(ctk.CTkFrame):
         self.supply_combobox.grid(row=row, column=0, padx=10, pady=(0, 10), sticky="ew")
         row += 1
 
-        # 7. Кнопка "Печать Этикетки" (Требование 2)
-        self.print_button = ctk.CTkButton(control_panel, text="🖨️ Печать Этикетки",
-                                          command=self.print_label_from_button, font=self.font, fg_color="gray",
-                                          state="disabled")
-        self.print_button.grid(row=row, column=0, padx=10, pady=10, sticky="ew")
-        row += 1
+
         # 8. Кнопка "В доставку"
         self.transfer_button = ctk.CTkButton(control_panel, text="Передать поставку в доставку",
                                           command=self.transfer_supply_to_delivery_button, font=self.font, fg_color="blue",
@@ -280,6 +304,106 @@ class FBSModeWB(ctk.CTkFrame):
         self.update_table()
         self.update_supply_combobox()
         self.start_auto_focus()
+
+    def load_orders(self):
+        """Загружает заказы из Excel"""
+
+        file_path = fd.askopenfilename(filetypes=[("Excel files", "*.xlsx *.xls")])
+        if not file_path:
+            return
+
+        try:
+            df_unload = pd.read_excel(file_path)
+            required_columns = [
+                "Номер заказа", "Служба доставки", "Бренд", "Цена",
+                "Статус", "Артикул поставщика", "Количество", "Размер"
+            ]
+            missing_cols = [col for col in required_columns if col not in df_unload.columns]
+            if missing_cols:
+                self.show_log(f"Ошибка: Отсутствуют столбцы: {', '.join(missing_cols)}", is_error=True)
+                return
+            # проверка полек  "Служба доставки" == Wildberries
+            # 2. Фильтрация по Wildberries
+            filtered_df = df_unload[df_unload['Служба доставки'].astype(str).str.contains(self.marketplace, na=False)].copy()
+            filtered_df["Статус обработки"] = filtered_df["Статус"].replace({'': 'indefinite', 'Новый': 'new'})
+
+            #    Мы используем reindex, чтобы гарантировать, что все строки имеют нужные колонки
+            if not filtered_df.empty:
+                # Берем только существующие колонки из self.columns
+                existing_cols_in_filtered_df = [col for col in self.columns if col in filtered_df.columns]
+
+                # Создаем временный DF, который будет содержать данные только по существующим колонкам
+                temp_df = filtered_df[existing_cols_in_filtered_df].copy()
+
+                # Добавляем все недостающие колонки и выравниваем индекс
+                temp_df = temp_df.reindex(columns=self.columns)
+
+                # 💡 ИСПРАВЛЕНИЕ WARNING 1: Приводим все колонки к строковому типу перед заполнением
+                # Это позволяет безопасно хранить строки и NaN, устраняя FutureWarning.
+                for col in temp_df.columns:
+                    temp_df[col] = temp_df[col].astype(object)
+                # Pandas по умолчанию заполняет новые колонки NaN. Заменяем NaN на пустые строки
+                temp_df.fillna('', inplace=True)
+
+
+            # Разбиваем каждую запись на количество
+            expanded_rows = []
+            for _, row in temp_df.iterrows():
+                count = int(row["Количество"])
+                for _ in range(count):
+                    new_row = row.to_dict()
+                    new_row["Количество"] = 1
+                    expanded_rows.append(new_row)
+
+            new_df = pd.DataFrame(expanded_rows)
+
+            # # Добавляем внутренние поля
+            # new_df["Штрихкод"] = ""
+            # new_df["Код маркировки"] = ""
+            # new_df["Номер поставки"] = ""
+            # new_df["Статус обработки"] = "new"
+
+            # Автоматически заполняем штрихкоды из основной базы данных
+            if self.app_context.df is not None:
+                for idx, row in new_df.iterrows():
+                    # Ищем по артикулу и размеру в основной базе
+                    matches = self.app_context.df[
+                        (self.app_context.df["Артикул производителя"].astype(str) == str(row["Артикул поставщика"])) &
+                        (self.app_context.df["Размер"].astype(str) == str(row["Размер"]))
+                        ]
+                    if not matches.empty:
+                        # Берем первый найденный штрихкод
+                        barcode = matches.iloc[0]["Штрихкод производителя"]
+                        if pd.notna(barcode) and str(barcode).strip() != "":
+                            new_df.at[idx, "Штрихкод"] = str(barcode)
+                            # Также добавляем в локальную базу
+                            key = f"{row['Артикул поставщика']}_{row['Размер']}"
+                            self.marking_db[key] = str(barcode)
+
+            # Удаляем дубли по "Номер заказа"
+            if not self.fbs_df.empty:
+                existing_orders = set(self.fbs_df["Номер заказа"].unique())
+                new_df = new_df[~new_df["Номер заказа"].isin(existing_orders)]
+
+            # Объединяем с текущими данными
+            if self.fbs_df.empty:
+                self.fbs_df = new_df
+            else:
+                self.fbs_df = pd.concat([self.fbs_df, new_df], ignore_index=True)
+
+            # Сохраняем в контекст
+            self.save_data_to_context()
+
+            # Обновляем таблицу
+            self.update_table()
+
+            self.show_log(f"Загружено {len(new_df)} новых заказов.")
+        except Exception as e:
+            self.show_log(f"Ошибка при загрузке файла: {str(e)}", is_error=True)
+
+    def checkbox_event(self):
+        print("Checkbox toggled, current value:", self.check_var.get())
+
 
     def on_arrow_key_release(self, event):
         """
@@ -343,28 +467,23 @@ class FBSModeWB(ctk.CTkFrame):
         if not matches.empty:
             # --- Логика Сборки по сканированию (автоматическая) ---
             row_index = matches.index[0]
-            print('row_index',row_index)
+            # print('row_index',row_index)
             row = self.fbs_df.loc[row_index]
             self.selected_row_index = row_index
            # --- ДОБАВЛЕНИЕ ЛОГИКИ ВЫДЕЛЕНИЯ И ФОКУСА - --
 
-            # Прокручиваем таблицу к найденной строке
-            # self.data_table.scroll_to_row(row_index)
-
-            # Выделяем найденную строку (делаем ее активной/текущей) self.on_row_select(selected_index)
-            # self.data_table.on_row_select(row_index)
-
-            # ---------------------------------------------
-
             self.data_table.select_row(row_index)
             play_success_scan_sound()
-
+            if self.check_var.get() == 'on':
+                self.show_log(f"Печатаем этикетку {self.current_barcode} ШК  ")
+                print(f'Печатаем этикетку {self.current_barcode} ШК  ')
+                self.print_label_from_button()
         # 2. Несовпадение: возможно, это новый ШК или артикул для добавления
         else:
             # self.handle_unmatched_barcode(self.current_barcode) Этот метод реализовать позже
             self.show_log(f"Несовпадение: возможно, это новый {self.current_barcode} ШК или артикул ")
 
-        print('row_index', row_index)
+        # print('row_index', row_index)
         # self._select_row_by_index(row_index)
         # self.editing = True
         # self.start_auto_focus()
@@ -434,9 +553,77 @@ class FBSModeWB(ctk.CTkFrame):
 
     # --- МЕТОДЫ УПРАВЛЕНИЯ UI И ДАННЫМИ ---
 
+    # /home/markv7/PycharmProjects/Barcode_print/gui/fbs_wb_gui.py (внутри class FBSModeWB)
+    # from typing import Optional, Dict
+    def fetch_product_info_by_wb_barcode(self, wb_barcode: str) -> Optional[Dict]:
+        """
+        Ищет информацию о товаре в общей базе данных (self.app_context.df)
+        по Баркоду Wildberries (Баркод  Wildberries).
+
+        :param wb_barcode: Баркод Wildberries, полученный из API.
+        :return: Словарь с данными для заполнения полей заказа или None.
+        """
+        # Проверяем наличие и содержимое общей базы данных
+        if self.app_context.df is None or self.app_context.df.empty:
+            return None
+
+        # Название столбца в загруженном CSV/Excel файле (с учетом двух пробелов)
+        WB_BARCODE_COL = "Баркод  Wildberries"
+
+        if WB_BARCODE_COL not in self.app_context.df.columns:
+            print(f"ERROR: Столбец '{WB_BARCODE_COL}' не найден в базе данных.")
+            return None
+
+        # Очистка и приведение типов для безопасного сравнения
+        search_barcode = str(wb_barcode).strip()
+
+        # 1. Фильтруем базу данных, приводя столбец к строковому типу
+        # Используем .astype(str).str.strip() для надежного сравнения
+        matches = self.app_context.df[
+            self.app_context.df[WB_BARCODE_COL].astype(str).str.strip() == search_barcode
+            ]
+
+        if matches.empty:
+            return None
+
+        # 2. Берем первую найденную строку и извлекаем данные
+        product_row = matches.iloc[0]
+
+        # 3. Составляем словарь для обновления строки заказа
+        # Ключи словаря должны соответствовать именам столбцов в self.fbs_df
+        result = {}
+
+        # Соответствие полей:
+        # Артикул поставщика (заказ) <- Артикул производителя (база)
+        if "Артикул производителя" in product_row:
+            result["Артикул поставщика"] = str(product_row["Артикул производителя"]).strip()
+
+        # Размер (заказ) <- Размер (база)
+        if "Размер" in product_row:
+            result["Размер"] = str(product_row["Размер"]).strip()
+
+        # Штрихкод (заказ, наш внутренний) <- Штрихкод производителя (база)
+        if "Штрихкод производителя" in product_row:
+            result["Штрихкод"] = str(product_row["Штрихкод производителя"]).strip()
+
+        # Бренд (заказ) <- Бренд (база)
+        if "Бренд" in product_row:
+            result["Бренд"] = str(product_row["Бренд"]).strip()
+
+        return result
+
     def load_wb_orders(self):
         """Загружает новые сборочные задания WB через API."""
         debug_info = False
+        # Проверяем наличие и содержимое общей базы данных
+        if self.df_barcode_WB is None or self.df_barcode_WB.empty:
+            try:
+                file_path = fd.askopenfilename(filetypes=[("Excel files", "*.xlsx *.xls")])
+                self.df_barcode_WB = pd.read_excel(file_path)
+                setattr(self.app_context, "df_barcode_WB", self.df_barcode_WB)
+                setattr(self.app_context, "file_path2", file_path)
+            except Exception as e:
+                self.show_log(f"Ошибка при загрузке файла: {str(e)}", is_error=True)
         try:
             self.show_log("WB API: Запрос новых сборочных заданий...")
             orders_data = self.api.get_orders(params={'flag': 0})
@@ -452,11 +639,12 @@ class FBSModeWB(ctk.CTkFrame):
                 self.debug_print_first_row(new_orders_df, 3)
             else:
                 # Создаем ключевые колонки и статусы (сохраняем столбцы, как в self.fbs_df) ВРЕМЕННО ЗАКОММЕНТИРОВА нижние строки
-                new_orders_df['Номер заказа'] = new_orders_df['id']
+                new_orders_df['Номер заказа'] = new_orders_df['id'] #.astype(str)
                 new_orders_df['Служба доставки'] = self.marketplace
-                new_orders_df['Цена'] = new_orders_df['finalPrice']
-                new_orders_df['Артикул поставщика'] = new_orders_df['article']
-                new_orders_df['Размер'] = new_orders_df['chrtId']
+                new_orders_df['Цена'] = new_orders_df['finalPrice'].astype(str)
+                new_orders_df['Артикул поставщика'] = new_orders_df['article'].astype(str)
+                new_orders_df['Размер'] = new_orders_df['chrtId'].astype(str)
+                new_orders_df['Количество'] = 1
                 new_orders_df['Статус обработки'] = 'new'
 
                 def extract_first_sku(sku_list):
@@ -469,19 +657,33 @@ class FBSModeWB(ctk.CTkFrame):
                     return ''
 
                 # Создаем новый столбец 'Штрихкод', применяя функцию к колонке 'skus'
-                new_orders_df['Штрихкод'] = new_orders_df['skus'].apply(extract_first_sku)
+                new_orders_df['Штрихкод WB'] = new_orders_df['skus'].apply(extract_first_sku)
 
                 # Добавляем отсутствующие колонки из self.fbs_df, чтобы избежать ошибки при concat
                 for col in self.fbs_df.columns:
                     if col not in new_orders_df.columns:
                         new_orders_df[col] = ''
-
+                try:
+                    # Автоматически заполняем штрихкоды из основной базы данных
+                    if self.df_barcode_WB is not None:
+                        for idx, row in new_orders_df.iterrows():
+                            # --- ИСПОЛЬЗУЕМ НОВУЮ ФУНКЦИЮ ---
+                            additional_info = self.fetch_product_info_by_wb_barcode(row['Штрихкод WB'])
+                            if additional_info:
+                                # Создаем базовую строку заказа
+                                new_orders_df.loc[idx, "Размер"] = additional_info["Размер"]
+                                new_orders_df.loc[idx, "Артикул поставщика"] = additional_info["Артикул поставщика"]
+                                new_orders_df.loc[idx, "Штрихкод"] = additional_info["Штрихкод"]
+                                new_orders_df.loc[idx, "Бренд"] = additional_info["Бренд"]
+                except Exception as e:
+                    self.show_log(f"❌ Ошибка при попытке сопоставить строки с внутренней базой: {e}", is_error=True)
+                    print(f"❌ Ошибка при попытке сопоставить строки с внутренней базой: {e}")
                 # Объединяем с текущей таблицей (удаляя дубликаты по 'Номер заказа')
                 self.fbs_df = pd.concat([self.fbs_df, new_orders_df], ignore_index=True)
                 self.fbs_df = self.fbs_df.drop_duplicates(subset=['Номер заказа'], keep='last')
 
-                # Очищаем таблицу от строк, где нет номера заказа (могут появиться при ошибке API)
-                self.fbs_df = self.fbs_df[self.fbs_df['Номер заказа'] != ''].copy()
+                # # Очищаем таблицу от строк, где нет номера заказа (могут появиться при ошибке API)
+                # self.fbs_df = self.fbs_df[self.fbs_df['Номер заказа'] != ''].copy()
 
                 self.update_table()
                 self.show_log(f"✅ Загружено {len(orders)} новых сборочных заданий WB.")
@@ -519,10 +721,10 @@ class FBSModeWB(ctk.CTkFrame):
     def update_supply_combobox(self):
         """Загружает список активных поставок и обновляет ComboBox."""
         try:
-            supplies_data = self.api.get_supplies(params={'status': 'active'})
-            supplies = supplies_data.get('supplies', [])
+            # supplies_data = self.api.get_supplies(params={'status': 'active'})
+            # supplies = supplies_data.get('supplies', [])
 
-            supply_ids = [s['id'] for s in supplies if s['status'] in ('new', 'active')]
+            supply_ids = self.getting_supplies()
 
             if not supply_ids:
                 self.supply_combobox.configure(values=["<Нет активных поставок>"])
@@ -548,8 +750,40 @@ class FBSModeWB(ctk.CTkFrame):
         self.wb_supply_id_var.set(selected_id)
         self.show_log(f"Выбрана поставка: {selected_id}")
 
-    # --- МЕТОДЫ СБОРКИ И ПЕЧАТИ (Требования 1, 2, 3) ---
 
+    def getting_supplies(self) -> List:
+        debug_info = False
+        start_next = 135615004
+        response = self.api.get_supplies(params={"limit": 1000, "next": start_next})
+        get_next = response['next']
+        if debug_info:  print('get_next:', get_next)
+        if debug_info:  print('Кол-во отданных записей:',len(response['supplies']))
+        list_supplies = [item['id'] for item in response['supplies'] if item['done'] == False]
+        if debug_info:  print('Кол-во активных поставок:', len(list_supplies))
+        if debug_info:  print(list_supplies)
+        return list_supplies
+
+    def order_relation_supply(self):
+        debug_info = True
+        list_supplies = self.getting_supplies()
+    #  далее поработать получить сборочные задания к каждой поставке
+        contain_supply = [{"supplyId":supplyId, "orders":self.api.get_orders_in_supply(supplyId)["orders"]} for supplyId in list_supplies]
+        if debug_info:  print('Кол-во активных поставок:', len(contain_supply))
+        # обновляем значения в таблице
+        if not contain_supply:
+            self.show_log("Нет данных для обновления поставок.", is_error=False)
+            return
+        # здесь надо все проверить !!!!
+        for item in  contain_supply:
+            supplyId_t = item['supplyId']
+            orders = [id_item['id'] for id_item in item['orders']]
+            # print(supplyId_t,': ',orders)
+            if orders:
+                mask = self.fbs_df['Номер заказа'].isin(orders)
+                self.fbs_df.loc[mask, 'Номер поставки'] = supplyId_t
+        self.update_table()
+
+                # --- МЕТОДЫ СБОРКИ И ПЕЧАТИ (Требования 1, 2, 3) ---
     def _handle_row_selection(self, row_index=None):
         """Обрабатывает выбор строки в таблице."""
 
@@ -569,7 +803,7 @@ class FBSModeWB(ctk.CTkFrame):
             self.print_button.configure(state="disabled")
             return
 
-        is_processed = row["Статус обработки"] == 'complete'
+        is_processed = row["Статус обработки"] == 'confirm'
         has_barcode = row["Штрихкод"] != ""
         has_marking = row["Код маркировки"] != ""
         has_articul = row["Артикул поставщика"] != ""
@@ -606,7 +840,7 @@ class FBSModeWB(ctk.CTkFrame):
         if self.selected_row_index is not None:
             row = self.fbs_df.loc[self.selected_row_index]
             # Активна, если собрано и добавлено в поставку
-            if (row['Статус обработки'] == 'confirm') and bool(re.match(self.pattern, row['Номер поставки'])):
+            if row['Статус обработки'] == 'confirm': # and bool(re.match(self.pattern, row['Номер поставки'])):
                 is_printable = True
 
         if is_printable:
@@ -622,7 +856,7 @@ class FBSModeWB(ctk.CTkFrame):
         2. Обновляет статус в таблице.
         3. Активирует кнопку печати.
         """
-        debug_info = False
+        debug_info = True
         selected_supply_id = self.wb_supply_id_var.get().strip()
         if self.selected_row_index is None:
             self.show_log("❌ Выберите строку заказа для завершения сборки.", is_error=True)
@@ -633,7 +867,7 @@ class FBSModeWB(ctk.CTkFrame):
             return
 
         row_index = self.selected_row_index
-        order_id = self.fbs_df.loc[row_index, "Номер заказа"]
+        order_id = int(self.fbs_df.loc[row_index, "Номер заказа"])
         # printer_target = self.app_context.printer_name
 
         self.show_log(
@@ -642,15 +876,18 @@ class FBSModeWB(ctk.CTkFrame):
         # 1. Добавление заказа в поставку WB (Шаг 5 - часть 1)
         try:
             self.show_log(f"WB API: Добавление заказа {order_id} в поставку {selected_supply_id}...")
-            if debug_info: print(f"WB API: Добавление заказа {order_id} в поставку {selected_supply_id}...")
-            else: self.api.add_order_to_supply(selected_supply_id, order_id)
-            self.update_status(status = 2, supply = selected_supply_id)
+            if debug_info:
+                print(f"WB API: Добавление заказа {order_id} в поставку {selected_supply_id}...")
+                print(f"Тип данных order_id - {type(order_id)} Тип данных selected_supply_id - {type(selected_supply_id)} ")
+
+            json_obj = self.api.add_order_to_supply(selected_supply_id, order_id)
+            print(json_obj)
 
             self.show_log(f"✅ Заказ {order_id} успешно добавлен в поставку {selected_supply_id} (WB API).")
             if debug_info: print(f"✅ Заказ {order_id} успешно добавлен в поставку {selected_supply_id} (WB API).")
         except Exception as e:
-            self.show_log(f"❌ Ошибка добавления заказа {order_id} в поставку: {e}", is_error=True)
-            if debug_info: print(f"❌ Ошибка добавления заказа {order_id} в поставку: {e}")
+            self.show_log(f"❌ Ошибка добавления заказа {order_id} в поставку {selected_supply_id}: {e}", is_error=True)
+            if debug_info: print(f"❌ Ошибка добавления заказа {order_id} в поставку {selected_supply_id}: {e}")
             return
 
         # 2. Обновление статуса в DataFrame (Шаг 6)
@@ -674,27 +911,27 @@ class FBSModeWB(ctk.CTkFrame):
         except Exception as e:
             self.show_log(f"❌ Критическая ошибка при обновлении статуса заказа {order_id}: {e}", is_error=True)
 
-    def _add_order_to_supply_and_print(self, row, supply_id):
-        """Вспомогательный метод: добавляет заказ в поставку и печатает этикетку."""
-        order_id = row['Номер заказа']
-        printer_target = self.app_context.printer_name
-
-        # 1. Добавление в поставку
-        try:
-            self.show_log(f"WB API: Добавление заказа {order_id} в поставку {supply_id}...")
-            self.api.add_order_to_supply(supply_id, order_id)
-
-            # Обновление статуса в DataFrame
-            self.fbs_df.loc[row.name, 'Номер поставки'] = supply_id
-            self.show_log(f"✅ Заказ {order_id} успешно добавлен в поставку {supply_id}.", is_error=False)
-
-            # 2. Печать (Автоматическая после добавления)
-            self._fetch_and_print_wb_label(order_id, printer_target)
-
-        except Exception as e:
-            self.fbs_df.loc[row.name, 'Номер поставки'] = 'Ошибка'
-            self.show_log(f"❌ Ошибка добавления заказа {order_id} в поставку: {e}", is_error=True)
-            play_unsuccess_scan_sound()
+    # def _add_order_to_supply_and_print_need_delete(self, row, supply_id):
+    #     """Вспомогательный метод: добавляет заказ в поставку и печатает этикетку."""
+    #     order_id = row['Номер заказа']
+    #     printer_target = self.app_context.printer_name
+    #
+    #     # 1. Добавление в поставку
+    #     try:
+    #         self.show_log(f"WB API: Добавление заказа {order_id} в поставку {supply_id}...")
+    #         self.api.add_order_to_supply(supply_id, order_id)
+    #
+    #         # Обновление статуса в DataFrame
+    #         self.fbs_df.loc[row.name, 'Номер поставки'] = supply_id
+    #         self.show_log(f"✅ Заказ {order_id} успешно добавлен в поставку {supply_id}.", is_error=False)
+    #
+    #         # 2. Печать (Автоматическая после добавления)
+    #         self._fetch_and_print_wb_label(order_id, printer_target)
+    #
+    #     except Exception as e:
+    #         self.fbs_df.loc[row.name, 'Номер поставки'] = 'Ошибка'
+    #         self.show_log(f"❌ Ошибка добавления заказа {order_id} в поставку: {e}", is_error=True)
+    #         play_unsuccess_scan_sound()
 
     def print_label_from_button(self):
         """Печать этикетки по кнопке (требование 2)."""
@@ -707,32 +944,36 @@ class FBSModeWB(ctk.CTkFrame):
         # print('Статус обработки:',row['Статус обработки'],'Номер поставки:',row['Номер поставки'])
         # print('Проверка шаблона ID поставки:', bool(re.match(self.pattern,row['Номер поставки'])))
 
-        if (row['Статус обработки'] == 'confirm') and bool(re.match(self.pattern,row['Номер поставки'])):
+        if row['Статус обработки'] == 'confirm': # and bool(re.match(self.pattern,row['Номер поставки'])):
             self._fetch_and_print_wb_label(int(row['Номер заказа']), self.app_context.printer_name)
         else:
             self.show_log("❌ Заказ не собран или не добавлен в поставку. Печать невозможна.", is_error=True)
 
     def _fetch_and_print_wb_label(self, order_id, printer_target):
-        """Запрашивает ZPL этикетку и отправляет на печать."""
+        """Запрашивает  этикетку и отправляет на печать."""
         debug_info = False
         try:
-            self.show_log("WB API: Запрос ZPL этикетки...")
-            if debug_info: print("WB API: Запрос ZPL этикетки...")
+            self.show_log("WB API: Запрос  этикетки...")
+            if debug_info: print("WB API: Запрос  этикетки...")
             # Запрашиваем стикер в формате ZPL
-            stickers_response = self.api.get_stickers([order_id], type="png", width=58, height=40)
+            stikers_type = "png"
+            width_type = 40 #58
+            height_type = 30 #40
+            stickers_response = self.api.get_stickers([order_id], type=stikers_type if stikers_type != "zplv" else "zplh",
+                                                      width=width_type, height=height_type)
             stickers = stickers_response.get('stickers')
 
             if stickers and isinstance(stickers, list) and 'file' in stickers[0]:
                 label_base64_data = stickers[0]['file']
                 if debug_info: print(f"✅ Этикетка WB получена, пытаемся напечатать")
                 # print_wb_ozon_label сам определяет, что это ZPL, и отправит его на печать.
-                # if self.label_printer.print_wb_ozon_label(label_base64_data, printer_target):
-                if self.label_printer.print_on_windows(image = label_base64_data):
+                if self.label_printer.print_wb_ozon_label(label_base64_data, printer_target, type=stikers_type):
+                # if self.label_printer.print_on_windows(image = label_base64_data):
                     self.show_log(f"✅ Этикетка WB для {order_id} успешно отправлена на печать.", is_error=False)
                     if debug_info: print(f"✅ Этикетка WB для {order_id} успешно отправлена на печать.")
                 else:
-                    self.show_log("❌ Прямая ZPL-печать не удалась. Проверьте принтер .", is_error=True)
-                    if debug_info: print("❌ Прямая ZPL-печать не удалась. Проверьте принтер .")
+                    self.show_log("❌ Прямая печать не удалась. Проверьте принтер .", is_error=True)
+                    if debug_info: print("❌ Прямая печать не удалась. Проверьте принтер .")
             else:
                 self.show_log("❌ WB API не вернул данные этикетки.", is_error=True)
                 if debug_info: print("❌ WB API не вернул данные этикетки.")

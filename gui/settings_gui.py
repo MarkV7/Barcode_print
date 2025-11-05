@@ -3,17 +3,17 @@ import customtkinter as ctk
 import sys # <-- Добавить sys
 
 # Попытка импорта Windows-специфичных библиотек
-if sys.platform == 'win32':
-    try:
-        import win32print
-        IS_WINDOWS = True
-    except ImportError:
-        IS_WINDOWS = False
-        print("❌ WARNING: pywin32 не найден.")
-else:
-    # На Linux мы полагаемся, что заглушка уже загружена через sys.path
-    import win32print # Импортируем заглушку, которую Python найдет в текущей папке
+
+
+if sys.platform == 'linux':
     IS_WINDOWS = False
+else:
+    IS_WINDOWS = True
+# print('sys.platform:',sys.platform)
+# print('IS_WINDOWS:',IS_WINDOWS)
+
+
+import win32print
 
 class SettingsMode(ctk.CTkFrame):
     def __init__(self, parent, font, app_context):
@@ -107,11 +107,12 @@ class SettingsMode(ctk.CTkFrame):
 
     def get_printer_list(self):
         """Получает список доступных принтеров. Реальная работа только под Windows."""
-
         if IS_WINDOWS:
             try:
+                # print('Тестовое сообщение IS_WINDOWS', IS_WINDOWS)
                 # Логика для Windows (использует win32print)
                 printers = [printer[2] for printer in win32print.EnumPrinters(win32print.PRINTER_ENUM_LOCAL, None, 1)]
+                # print('Список принтеров:', printers)
                 if not printers:
                     return ["Нет доступных принтеров (Win)"]
                 return printers
@@ -125,11 +126,6 @@ class SettingsMode(ctk.CTkFrame):
                 mock_printers = win32print.EnumPrinters(win32print.PRINTER_ENUM_LOCAL, None, 1)
                 # Вытаскиваем имя принтера (третий элемент в кортеже заглушки)
                 printers = [p[2] for p in mock_printers]
-
-                # Добавляем ваш принтер для гарантированного выбора в Linux
-                if "Samsung_SCX-3400" not in printers:
-                    printers.append("Samsung_SCX-3400")
-
                 return printers
             except Exception as e:
                 print(f"Ошибка при получении списка принтеров (Linux/Mock): {e}")

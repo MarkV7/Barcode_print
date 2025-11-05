@@ -245,7 +245,14 @@ class EditableDataTable(ctk.CTkFrame):
 
         for col in self.displayed_df.columns:
             self.tree.heading(col, text=col)
-            self.tree.column(col, anchor="w", width=150)
+            if col=="Количество": self.tree.column(col, anchor="w", width=50)
+            elif col == "Размер": self.tree.column(col, anchor="w", width=50)
+            elif col == "Служба доставки":
+                self.tree.column(col, anchor="w", width=150)
+            elif col == "Статус обработки":
+                self.tree.column(col, anchor="w", width=150)
+            else:
+                self.tree.column(col, anchor="w", width=200)
 
         self._insert_data()
 

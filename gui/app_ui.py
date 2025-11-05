@@ -26,7 +26,7 @@ class AppUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Склад Ozon / Wildberries")
-        self.root.geometry("1600x600")
+        self.root.geometry("1700x800")
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 

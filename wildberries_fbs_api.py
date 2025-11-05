@@ -59,6 +59,15 @@ class WildberriesFBSAPI:
         response.raise_for_status()
         return response.json()
 
+    def get_orders_in_supply(self, supplyId:str) -> Dict:
+        """
+        Метод возвращает сборочные задания, закреплённые за поставкой.
+        """
+        url = f"{self.BASE_URL}/api/v3/supplies/{supplyId}/orders"
+        response = self.session.get(url)
+        response.raise_for_status()
+        return response.json()
+
     def create_supply(self, name: str) -> dict:
         """
         Создать новую поставку (FBS).
@@ -71,7 +80,7 @@ class WildberriesFBSAPI:
         response.raise_for_status()
         return response.json()
 
-    def get_stickers(self, order_ids, type="png", width=58, height=40) -> dict:
+    def get_stickers(self, order_ids, type="zplh", width=58, height=40) -> dict:
         """
         Получить стикеры для сборочных заданий (FBS).
         order_ids: список ID сборочных заданий (orders)
@@ -94,10 +103,9 @@ class WildberriesFBSAPI:
         Возвращает: dict с результатом
         """
         url = f"{self.BASE_URL}/api/v3/supplies/{supply_id}/orders/{order_id}"
-        data = {"orders": order_id}
         response = self.session.patch(url)
         response.raise_for_status()
-        return response.json()
+        return response
 
     def close_supply_complete(self, supplyId: str) -> Dict:
         """
@@ -110,3 +118,15 @@ class WildberriesFBSAPI:
         response = self.session.patch(url)
         response.raise_for_status()
         return response.json()
+
+    def assign_product_labeling(self, order_id:int, sgtins:Optional[Dict[str, Any]] = None):
+        """
+        Метод позволяет закрепить за сборочным заданием код маркировки Честный знак.
+        Закрепить код маркировки можно только если в метаданных сборочного задания есть поле sgtin,
+        а сборочное задание находится в статусе confirm. Вид передачи данных
+        { "sgtins": [ "1234567890123456" ] }
+        """
+        url = f"{self.BASE_URL}/api/v3/orders/{order_id}/meta/sgtin"
+        response = self.session.put(url, json=sgtins)
+        response.raise_for_status()
+        return response

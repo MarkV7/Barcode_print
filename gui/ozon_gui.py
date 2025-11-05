@@ -317,8 +317,10 @@ class OzonMode(ctk.CTkFrame):
         self.table = EditableDataTable(
             self.table_container,
             dataframe=self.fbo_df,
+            columns='',
             header_font=("Segoe UI", 14, "bold"),
             cell_font=("Segoe UI", 14),
+            on_row_select='', #self._handle_row_selection,
             readonly=False,
             on_edit_start=self.on_edit_start,
             on_edit_end=self.on_edit_end
