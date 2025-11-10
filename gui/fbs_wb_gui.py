@@ -32,17 +32,19 @@ class FBSModeWB(ctk.CTkFrame):
         self.pattern = r'^WB-GI-[0-9]+$'
         self.marketplace = 'Wildberries'
         self.editing = False
+        self.input_mode = "barcode"  # "barcode" или "marking" - режим ввода
         self.focus_timer_id = None
         self.clear_timer_id = None
         self.current_barcode = None
         self.marking_db = {}  # База данных артикул+размер -> штрихкод
         self.columns=[
                 "Номер заказа", "Служба доставки", "Покупатель", "Бренд", "Цена",
-                # "Статус доставки",
                 "Артикул поставщика", "Количество", "Размер",
-                "Штрихкод", 'Штрихкод WB', "Код маркировки", "Номер поставки", "Статус обработки"
+                "Штрихкод", 'Штрихкод WB', "Код маркировки", "Номер поставки", 
+                "Статус заказа", "Статус обработки",
             ]
         self.define_status = ('indefinite','new','confirm','complete','cancel')
+        self.assembly_status = ("Не обработан","Обработан")
         # --- Данные ---
         # 1. Создаем целевой DF с необходимыми колонками, инициализированный пустыми строками
         self.fbs_df = pd.DataFrame(columns=self.columns)
@@ -76,12 +78,12 @@ class FBSModeWB(ctk.CTkFrame):
                 # Pandas по умолчанию заполняет новые колонки NaN. Заменяем NaN на пустые строки
                 self.fbs_df.fillna('', inplace=True)
 
-            # 4. Установка значения по умолчанию для "Статус обработки"
+            # 4. Установка значения по умолчанию для "Статус заказа"
             #    (Этот статус мог быть потерян при reindex, если он не существовал в исходном DF,
             #    но должен быть добавлен после создания структуры)
-            if "Статус обработки" in self.fbs_df.columns:
-                # Заполняем пустые значения в 'Статус обработки' значением "Не обработан"
-                self.fbs_df["Статус обработки"] = self.fbs_df["Статус обработки"].replace({'': 'indefinite', 'Не обработан':'indefinite'})
+            if "Статус заказа" in self.fbs_df.columns:
+                # Заполняем пустые значения в 'Статус заказа' значением "Не обработан"
+                self.fbs_df["Статус заказа"] = self.fbs_df["Статус заказа"].replace({'': 'indefinite', 'Не обработан':'indefinite'})
 
         self.current_orders_df = None  # Заказы, загруженные из API
         self.wb_marking_db = self._load_new_barcodes()  # База данных артикул+размер -> штрихкод
@@ -98,6 +100,7 @@ class FBSModeWB(ctk.CTkFrame):
 
         # --- UI элементы ---
         self.scan_entry = None
+        self.scan_entry2 = None
         self.cis_entry = None
         self.table_frame = None
         self.data_table = None
@@ -110,6 +113,7 @@ class FBSModeWB(ctk.CTkFrame):
         self.table_label = None
         self.check_var = None
         self.checkbox = None
+        self.assign_product = None
 
         self.setup_ui()
 
@@ -162,23 +166,43 @@ class FBSModeWB(ctk.CTkFrame):
         self.grid_columnconfigure(0, weight=1)
         self.grid_columnconfigure(1, weight=0)  # Панель управления справа
         self.grid_rowconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=0)
 
         # --- Левая часть: Таблица и Лог ---
+        mrow = 0
         main_frame = ctk.CTkFrame(self)
-        main_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
-        main_frame.grid_rowconfigure(0, weight=1)
-        main_frame.grid_columnconfigure(0, weight=1)
+        main_frame.grid(row=mrow, column=0, sticky="nsew", padx=10, pady=10)
+        main_frame.grid_rowconfigure(mrow, weight=0)
+        main_frame.grid_columnconfigure(mrow, weight=1)
+
+        # Верхнее окно сканирования
+        ctk.CTkLabel(main_frame, text="Автосборка:",
+                     font = ctk.CTkFont(size=16, weight="bold") #self.font
+                     ).grid(row=mrow, column=0, padx=10,pady=(0,0))
+        mrow += 1
+        main_frame.grid_rowconfigure(mrow, weight=0)
+        self.scan_entry = ctk.CTkEntry(main_frame, width=300, font=self.font)
+        self.scan_entry.grid(row=mrow, column=0, padx=0, pady=(0,0))
+        self.scan_entry.bind('<Return>', lambda event: self.handle_barcode_input_auto(self.scan_entry.get()))
+        self.scan_entry.bind("<KeyRelease>", self.reset_clear_timer)
+        self.scan_entry.bind("<FocusIn>", self.on_entry_focus_in)
+        self.scan_entry.bind("<FocusOut>", self.on_entry_focus_out)
+        self.scan_entry.bind("<KeyPress>", self.handle_keypress)
+        # self.restore_entry_focus()
+
+        mrow += 1
+        main_frame.grid_rowconfigure(mrow, weight=1)
 
         # Таблица
         self.table_frame = ctk.CTkFrame(main_frame)
-        self.table_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
-        self.table_frame.grid_rowconfigure(0, weight=1)
-        self.table_frame.grid_columnconfigure(0, weight=1)
-
+        self.table_frame.grid(row=mrow, column=0, sticky="nsew", padx=5, pady=5)
+        self.table_frame.grid_rowconfigure(mrow, weight=1)
+        self.table_frame.grid_columnconfigure(mrow, weight=1)
+        mrow += 1
 
         # Лог (самый нижний элемент)
         self.log_label = ctk.CTkLabel(main_frame, text="Ожидание сканирования...", font=self.font, text_color="grey")
-        self.log_label.grid(row=1, column=0, sticky="ew", padx=5, pady=(0, 5))
+        self.log_label.grid(row=mrow, column=0, sticky="ew", padx=5, pady=(0, 5))
 
         # --- Правая часть: Управление ---
         control_panel = ctk.CTkFrame(self, width=300)
@@ -195,7 +219,7 @@ class FBSModeWB(ctk.CTkFrame):
         ctk.CTkButton(control_panel, text="Загрузить заказы из WB", command=self.load_wb_orders, font=self.font,
                       fg_color="blue", state="normal").grid(row=row, column=0, padx=10, pady=(10, 5), sticky="ew")
         row += 1
-        ctk.CTkButton(control_panel, text="Обновить статусы сборки", command=self.update_orders_statuses_from_api, font=self.font,
+        ctk.CTkButton(control_panel, text="Обновить статусы заказа", command=self.update_orders_statuses_from_api, font=self.font,
                       fg_color="gray", state="normal").grid(row=row, column=0, padx=10, pady=(10, 5), sticky="ew")
         row += 1
         # --- Разделитель ---
@@ -206,9 +230,9 @@ class FBSModeWB(ctk.CTkFrame):
         ctk.CTkLabel(control_panel, text="Поиск товара по ШК:", font=self.font).grid(row=row, column=0, padx=10,
                                                                                pady=(10, 0), sticky="w")
         row += 1
-        self.scan_entry = ctk.CTkEntry(control_panel, font=self.font)
-        self.scan_entry.bind('<Return>', lambda event: self.handle_barcode_input(self.scan_entry.get()))
-        self.scan_entry.grid(row=row, column=0, padx=10, pady=(0, 10), sticky="ew")
+        self.scan_entry2 = ctk.CTkEntry(control_panel, font=self.font)
+        self.scan_entry2.bind('<Return>', lambda event: self.handle_barcode_input(self.scan_entry.get()))
+        self.scan_entry2.grid(row=row, column=0, padx=10, pady=(0, 10), sticky="ew")
         row += 1
 
         # Создание переменной для контроля состояния
@@ -228,13 +252,18 @@ class FBSModeWB(ctk.CTkFrame):
         self.cis_entry.grid(row=row, column=0, padx=10, pady=(0, 10), sticky="ew")
         row += 1
 
-        # 4. Кнопка "Собрать Заказ" (Ручная сборка) (Требование 1)
+        # 4. Кнопка "Добавить к поставке"
         self.assembly_button = ctk.CTkButton(control_panel, text="Добавить к поставке",
                                              command=self.finalize_manual_assembly, font=self.font, fg_color="green",
                                              state="normal")
         self.assembly_button.grid(row=row, column=0, padx=10, pady=10, sticky="ew")
         row += 1
 
+        # 4. Кнопка "Привязать КИЗ к заказу"
+        self.assign_product = ctk.CTkButton(control_panel, text="Привязать КИЗ к заказу",
+            command=self.assign_product_label, font=self.font, fg_color="green",state="disabled")
+        self.assign_product.grid(row=row, column=0, padx=10, pady=10, sticky="ew")
+        row += 1
         # 7. Кнопка "Печать Этикетки" (Требование 2)
         self.print_button = ctk.CTkButton(control_panel, text="🖨️ Печать Этикетки",
                                           command=self.print_label_from_button, font=self.font, fg_color="gray",
@@ -325,7 +354,8 @@ class FBSModeWB(ctk.CTkFrame):
             # проверка полек  "Служба доставки" == Wildberries
             # 2. Фильтрация по Wildberries
             filtered_df = df_unload[df_unload['Служба доставки'].astype(str).str.contains(self.marketplace, na=False)].copy()
-            filtered_df["Статус обработки"] = filtered_df["Статус"].replace({'': 'indefinite', 'Новый': 'new'})
+            filtered_df["Статус заказа"] = filtered_df["Статус"].replace({'': self.define_status[0], 'Новый': self.define_status[1]})
+            filtered_df["Статус обработки"] = self.assembly_status[0]
 
             #    Мы используем reindex, чтобы гарантировать, что все строки имеют нужные колонки
             if not filtered_df.empty:
@@ -439,8 +469,9 @@ class FBSModeWB(ctk.CTkFrame):
 
         self.data_table.tree.tag_configure("found", background="#FFFACD")  # Желтый - найден штрихкод или товар в БД
         self.data_table.tree.tag_configure("missing", background="#FFB6C1")  # Красный - товар не найден в БД
-        self.data_table.tree.tag_configure("completed", background="#90EE90")  # Зеленый - есть и штрихкод, и маркировка
-        self.data_table.tree.tag_configure("confirm", background="#CCFFCC")  # Очень бледный, почти белый с легким зеленым оттенком.
+        self.data_table.tree.tag_configure("completed", background="#9966CC")  # Аметист - поставка в доставке
+        self.data_table.tree.tag_configure("confirm", background="#CCFFCC")  # Очень бледный, почти белый с легким зеленым оттенком.- есть и штрихкод, и маркировка
+        self.data_table.tree.tag_configure("collected order",background="#90EE90")  # Зеленый - заказ собран
 
     # --- МЕТОДЫ ОБРАБОТКИ СКАНИРОВАНИЯ ---
     def handle_barcode_input(self, input_value: str):
@@ -461,7 +492,8 @@ class FBSModeWB(ctk.CTkFrame):
         # print(str(self.current_barcode))
         # print(self.fbs_df['Штрихкод'].astype(str))
         # 1. Поиск: ищем  Штрихкод производителя в текущих заказах
-        matches = self.fbs_df[self.fbs_df['Штрихкод'].astype(str) == str(self.current_barcode)].copy()
+        matches = self.fbs_df[(self.fbs_df['Штрихкод'].astype(str) == str(self.current_barcode))
+                                & (self.fbs_df["Статус обработки"] == self.assembly_status[0])].copy()
         row_index = 0
 
         if not matches.empty:
@@ -472,7 +504,7 @@ class FBSModeWB(ctk.CTkFrame):
             self.selected_row_index = row_index
            # --- ДОБАВЛЕНИЕ ЛОГИКИ ВЫДЕЛЕНИЯ И ФОКУСА - --
 
-            self.data_table.select_row(row_index)
+            self.data_table.select_row(row_index) # выделение строки
             play_success_scan_sound()
             if self.check_var.get() == 'on':
                 self.show_log(f"Печатаем этикетку {self.current_barcode} ШК  ")
@@ -488,6 +520,171 @@ class FBSModeWB(ctk.CTkFrame):
         # self.editing = True
         # self.start_auto_focus()
 
+    def handle_barcode_input_auto(self, input_value: str):
+        """
+        Обрабатывает автоматическую последовательность ввода штрихкода и код маркировки, для поля автосборки
+        """
+        self.current_barcode = input_value.strip()
+        input_value = input_value.strip()
+        if self.input_mode == "barcode":
+            # Первый этап: ввод штрихкода
+            self.handle_barcode_input_old(input_value)
+        else:
+            # Второй этап: ввод кода маркировки
+            self.handle_marking_input(input_value)
+
+    def handle_barcode_input_old(self, barcode):
+        """ Обрабатывает ввод штрихкода, для поля автосборки """
+        if self.selected_row_index is not None:
+            # Извлекаем значение из DataFrame
+            barcode_value = self.fbs_df.at[self.selected_row_index, "Штрихкод"]
+            # 1. Проверка на пропущенное значение (NaN)
+            is_nan = pd.isna(barcode_value)
+            # 2. Проверка на пустую строку (после приведения к строке и удаления пробелов)
+            is_empty_string = str(barcode_value).strip() == ""
+            if is_nan or is_empty_string:
+                # Если выбрана строка, привязываем штрихкод к ней
+                row = self.fbs_df.loc[self.selected_row_index]
+                key = f"{row['Артикул поставщика']}_{row['Размер']}"
+
+                # Сохраняем штрихкод
+                self.marking_db[key] = barcode
+                self.fbs_df.at[self.selected_row_index, "Штрихкод"] = barcode
+
+                # Сохраняем в основную базу данных
+                self.save_to_main_database(row, barcode)
+
+                # Сохраняем данные в контекст
+                self.save_data_to_context()
+
+                play_success_scan_sound()
+                self.show_log(f"✅ Штрихкод {barcode} привязан. Теперь введите код маркировки...")
+
+            # Переключаемся на ввод маркировки
+            self.input_mode = "marking"
+            self.pending_barcode = barcode
+            # self.scanning_label.configure(text="Введите код маркировки... 🏷️")
+
+            # Очищаем поле ввода
+            self.scan_entry.delete(0, "end")
+            self.restore_entry_focus()
+        else:
+            if not str(barcode).strip():
+                self.show_log("Ошибка: Штрихкод не введен", is_error=True)
+                play_unsuccess_scan_sound()
+                return
+
+            # Если строка не выбрана, ищем по штрихкоду
+            matches = self.fbs_df[ (self.fbs_df['Штрихкод'].astype(str) == str(barcode))
+                                  & (self.fbs_df["Статус обработки"] == self.assembly_status[0])
+                                ]
+
+            row_index = 0
+
+            if not matches.empty:
+                # --- Логика Сборки по сканированию (автоматическая) ---
+                row_index = matches.index[0]
+                # print('row_index',row_index)
+                row = self.fbs_df.loc[row_index]
+                self.selected_row_index = row_index
+                # --- ДОБАВЛЕНИЕ ЛОГИКИ ВЫДЕЛЕНИЯ И ФОКУСА - --
+
+                self.data_table.select_row(row_index)  # выделение строки
+                # Если у строки уже есть код маркировки, показываем информацию
+                if row["Код маркировки"] == "" or pd.isna(row["Код маркировки"]):
+                    # Запрашиваем код маркировки
+                    self.input_mode = "marking"
+                    self.pending_barcode = barcode
+                    # self.scanning_label.configure(text="Введите код маркировки... 🏷️")
+                    self.show_log(f"Найдена строка: Заказ {row['Номер заказа']}. Введите код маркировки...")
+
+                else:
+                    self.show_log(
+                        f"Найдена строка: Заказ {row['Номер заказа']}, маркировка: {row['Код маркировки']}")
+                    self.selected_row_index = None
+                    self.show_log("Строка уже обработана");
+
+                self.scan_entry.delete(0, "end")
+                self.restore_entry_focus()
+
+            else:
+                self.show_log("Ошибка: Штрихкод не найден в заказах", is_error=True)
+                play_unsuccess_scan_sound()
+
+    def assign_product_label(self, row=None, marking_code=None):
+        if row is None:
+            if self.selected_row_index is None:
+                self.show_log("❌ Выберите активную строку для привязки КИЗ.", is_error=True)
+                return
+            row = self.fbs_df.loc[self.selected_row_index]
+            marking_code = self.fbs_df.at[self.selected_row_index, "Код маркировки"].astype(str)
+
+        if marking_code:
+            # Здесь по API WB Закрепить за сборочным заданием код маркировки товара Честный знак.
+            if row["Статус заказа"] == self.define_status[2]:
+                order_id = int(row["Номер заказа"])
+                try:
+                    sgtin = {"sgtins": [marking_code]}
+                    self.api.assign_product_labeling(order_id=order_id, sgtins=sgtin)
+                    self.show_log(
+                        f"❌ Успешно в API WB привязан код маркировки {marking_code} к номеру заказа {order_id} ")
+                except Exception as e:
+                    print(f"❌ Ошибка API WB привязки кода маркировки {marking_code} к номеру заказа {order_id}: {str(e)}")
+                    self.show_log(
+                        f"❌ Ошибка API WB привязки кода маркировки {marking_code} к номеру заказа {order_id}: {str(e)}",
+                        is_error=True)
+            else:
+                self.show_log(
+                    f"❌ Ошибка API WB привязки кода маркировки, 'Статус заказа' не переведен в 'confirm'",
+                    is_error=True)
+
+    def handle_marking_input(self, marking_code):
+        """Обрабатывает ввод кода маркировки, для поля автосборки"""
+        label_printer = LabelPrinter(self.app_context.printer_name)
+
+        if self.selected_row_index is not None:
+            row = self.fbs_df.loc[self.selected_row_index]
+            # Записываем код маркировки в таблицу, если значение не пусто
+            if marking_code:
+                # Проверяй корректность введенного кода
+                if not label_printer.is_correct_gs1_format(marking_code):
+                    play_unsuccess_scan_sound()
+                    self.show_log("❌ Неверный формат кода маркировки", bg_color="#FFE0E0", text_color="red")
+                    return
+
+                self.fbs_df.at[self.selected_row_index, "Код маркировки"] = marking_code
+                self.show_log(f"✅ Код маркировки {marking_code} привязан к заказу {row['Номер заказа']}")
+
+
+            # Печатаем этикетку после добавления заказа в поставку
+            self.finalize_manual_assembly()
+            # Привяжем код маркировки к метаданным заказа WB
+            self.assign_product_label(row, marking_code)
+
+            if self.check_var.get() == 'on':
+                self.show_log(f"Печатаем этикетку {self.pending_barcode} ШК  ")
+                print(f'Печатаем этикетку {self.pending_barcode} ШК  ')
+                self.print_label_from_button()
+
+            # Сохраняем данные в контекст
+            # self.save_data_to_context()
+
+            play_success_scan_sound()
+
+            # Обновляем таблицу
+            self.update_table()
+
+            # Сбрасываем состояние
+            self.selected_row_index = None
+            self.input_mode = "barcode"
+            self.pending_barcode = None
+            # self.scanning_label.configure(text="Ожидание сканирования... 📱")
+
+            self.scan_entry.delete(0, "end")
+            self.restore_entry_focus()
+        else:
+            self.show_log("Ошибка: Не выбрана строка для маркировки", is_error=True)
+            play_unsuccess_scan_sound()
 
     def handle_cis_input(self, input_value: str):
         """Обрабатывает ввод КИЗ (Честный знак). (Требование 3)"""
@@ -551,10 +748,51 @@ class FBSModeWB(ctk.CTkFrame):
 
         play_unsuccess_scan_sound()
 
+    def save_to_main_database(self, row, barcode):
+        """Сохраняет штрихкод в основную базу данных"""
+        if self.app_context.df is None:
+            return
+
+        # Ищем существующую запись
+        matches = self.app_context.df[
+            (self.app_context.df["Артикул производителя"].astype(str) == str(row["Артикул поставщика"])) &
+            (self.app_context.df["Размер"].astype(str) == str(row["Размер"]))
+            ]
+
+        if not matches.empty:
+            # Обновляем существующую запись
+            idx = matches.index[0]
+            self.app_context.df.at[idx, "Штрихкод производителя"] = barcode
+        else:
+            # Создаем новую запись
+            new_row = pd.DataFrame([{
+                "Артикул производителя": row["Артикул поставщика"],
+                "Размер": row["Размер"],
+                "Штрихкод производителя": barcode,
+                "Наименование поставщика": row.get("Бренд", ""),
+                "Бренд": row.get("Бренд", "")
+            }])
+            self.app_context.df = pd.concat([self.app_context.df, new_row], ignore_index=True)
+
+    def save_to_database(self):
+        """Сохраняет данные в основную базу данных файла Excel"""
+        #  в теории этот метод не нужен, так как по выходу, будет запрос о сохранении этой базы данных в файл
+        if self.app_context.df is None:
+            messagebox.showwarning("Ошибка", "Сначала загрузите основную базу данных.")
+            return
+
+        try:
+            # Сохраняем в Excel файл
+            if self.app_context.file_path:
+                self.app_context.df.to_excel(self.app_context.file_path, index=False)
+                self.show_log("✅ Данные сохранены в основную базу")
+            else:
+                self.show_log("⚠️ Путь к файлу не указан", is_error=True)
+        except Exception as e:
+            self.show_log(f"❌ Ошибка сохранения: {str(e)}", is_error=True)
+
     # --- МЕТОДЫ УПРАВЛЕНИЯ UI И ДАННЫМИ ---
 
-    # /home/markv7/PycharmProjects/Barcode_print/gui/fbs_wb_gui.py (внутри class FBSModeWB)
-    # from typing import Optional, Dict
     def fetch_product_info_by_wb_barcode(self, wb_barcode: str) -> Optional[Dict]:
         """
         Ищет информацию о товаре в общей базе данных (self.app_context.df)
@@ -615,15 +853,17 @@ class FBSModeWB(ctk.CTkFrame):
     def load_wb_orders(self):
         """Загружает новые сборочные задания WB через API."""
         debug_info = False
-        # Проверяем наличие и содержимое общей базы данных
-        if self.df_barcode_WB is None or self.df_barcode_WB.empty:
-            try:
-                file_path = fd.askopenfilename(filetypes=[("Excel files", "*.xlsx *.xls")])
-                self.df_barcode_WB = pd.read_excel(file_path)
-                setattr(self.app_context, "df_barcode_WB", self.df_barcode_WB)
-                setattr(self.app_context, "file_path2", file_path)
-            except Exception as e:
-                self.show_log(f"Ошибка при загрузке файла: {str(e)}", is_error=True)
+        # Проверяем наличие и содержимое общей базы данных -- df_barcode_WB убираем, потому как все будет храниться в df
+        # if self.df_barcode_WB is None or self.df_barcode_WB.empty:
+        #     try:
+        #         file_path = fd.askopenfilename(filetypes=[("Excel files", "*.xlsx *.xls")])
+        #         self.df_barcode_WB = pd.read_excel(file_path)
+        #         setattr(self.app_context, "df_barcode_WB", self.df_barcode_WB)
+        #         setattr(self.app_context, "file_path2", file_path)
+        #     except Exception as e:
+        #         self.show_log(f"Ошибка при загрузке файла: {str(e)}", is_error=True)
+        # else:
+        #     self.app_context.df = pd.concat([self.app_context.df, self.df_barcode_WB], ignore_index=True)
         try:
             self.show_log("WB API: Запрос новых сборочных заданий...")
             orders_data = self.api.get_orders(params={'flag': 0})
@@ -645,7 +885,8 @@ class FBSModeWB(ctk.CTkFrame):
                 new_orders_df['Артикул поставщика'] = new_orders_df['article'].astype(str)
                 new_orders_df['Размер'] = new_orders_df['chrtId'].astype(str)
                 new_orders_df['Количество'] = 1
-                new_orders_df['Статус обработки'] = 'new'
+                new_orders_df['Статус заказа'] = self.define_status[1]
+                new_orders_df['Статус обработки'] = self.assembly_status[0]
 
                 def extract_first_sku(sku_list):
                     """
@@ -691,7 +932,7 @@ class FBSModeWB(ctk.CTkFrame):
         except Exception as e:
             self.show_log(f"❌ Ошибка загрузки заказов WB: {e}", is_error=True)
             print(f"❌ Ошибка загрузки заказов WB: {e}")
-            # play_unsuccess_scan_sound()
+            play_unsuccess_scan_sound()
 
     def create_new_supply(self):
         """Создает новую поставку WB (требование 4)."""
@@ -758,6 +999,9 @@ class FBSModeWB(ctk.CTkFrame):
         get_next = response['next']
         if debug_info:  print('get_next:', get_next)
         if debug_info:  print('Кол-во отданных записей:',len(response['supplies']))
+        if len(response['supplies']) > 990:
+            self.show_log("Есть необходимость настроить стартовую переменную. Обратитесь к разработчику !!!")
+            print("Есть необходимость настроить стартовую переменную. Обратитесь к разработчику !!!")
         list_supplies = [item['id'] for item in response['supplies'] if item['done'] == False]
         if debug_info:  print('Кол-во активных поставок:', len(list_supplies))
         if debug_info:  print(list_supplies)
@@ -801,15 +1045,16 @@ class FBSModeWB(ctk.CTkFrame):
             # Недопустимый индекс
             self.assembly_button.configure(state="disabled")
             self.print_button.configure(state="disabled")
+            self.assign_product.configure(state="disabled")
             return
 
-        is_processed = row["Статус обработки"] == 'confirm'
+        is_processed = row["Статус заказа"] == self.define_status[2] # 'confirm'
         has_barcode = row["Штрихкод"] != ""
         has_marking = row["Код маркировки"] != ""
         has_articul = row["Артикул поставщика"] != ""
         has_size = row["Размер"] != ""
 
-        # self.show_log(f"Статус обработки: {is_processed} Штрихкод: {has_barcode} Код маркировки: {has_marking}", is_error=True)
+        # self.show_log(f"Статус заказа: {is_processed} Штрихкод: {has_barcode} Код маркировки: {has_marking}", is_error=True)
         # Условия для "Собрать заказ" (finalize_manual_assembly):
         # 1. Заказ НЕ обработан.
         # 2. Штрихкод и Код маркировки (если нужен, хотя тут мы просто проверяем наличие) заполнены.
@@ -822,12 +1067,13 @@ class FBSModeWB(ctk.CTkFrame):
         # 💡 УПРАВЛЕНИЕ КНОПКАМИ
         self.assembly_button.configure(state="normal" if can_finalize else "disabled")
         self.print_button.configure(state="normal" if can_print else "disabled")
+        self.assign_product.configure(state="normal" if can_print else "disabled")
 
     def _update_assembly_button_state(self):
         """Обновляет активность кнопки 'Собрать Заказ' (Требование 1)."""
         if self.selected_row_index is not None:
             row = self.fbs_df.loc[self.selected_row_index]
-            if row['Статус обработки'] != 'new':
+            if row['Статус заказа'] != self.define_status[1]: # 'new':
                 self.assembly_button.configure(state="normal", fg_color="green")
                 return
 
@@ -840,13 +1086,14 @@ class FBSModeWB(ctk.CTkFrame):
         if self.selected_row_index is not None:
             row = self.fbs_df.loc[self.selected_row_index]
             # Активна, если собрано и добавлено в поставку
-            if row['Статус обработки'] == 'confirm': # and bool(re.match(self.pattern, row['Номер поставки'])):
+            if row['Статус заказа'] == self.define_status[2]:  # 'confirm': and bool(re.match(self.pattern, row['Номер поставки'])):
                 is_printable = True
 
         if is_printable:
             self.print_button.configure(state="normal", fg_color="blue")
         else:
             self.print_button.configure(state="disabled", fg_color="gray")
+            self.assign_product.configure(state="disabled", fg_color="gray")
 
 
     def finalize_manual_assembly(self):
@@ -893,7 +1140,7 @@ class FBSModeWB(ctk.CTkFrame):
         # 2. Обновление статуса в DataFrame (Шаг 6)
         try:
             # Устанавливаем статус и номер поставки
-            self.fbs_df.loc[row_index, "Статус обработки"] = 'confirm'
+            self.fbs_df.loc[row_index, "Статус заказа"] = self.define_status[2] #'confirm'
             self.fbs_df.loc[row_index, "Номер поставки"] = selected_supply_id
 
             # Обновление таблицы и раскраски
@@ -941,10 +1188,10 @@ class FBSModeWB(ctk.CTkFrame):
 
         row = self.fbs_df.loc[self.selected_row_index]
         # print('Номер заказа:', row["Номер заказа"], 'Индекс строки:', self.selected_row_index)
-        # print('Статус обработки:',row['Статус обработки'],'Номер поставки:',row['Номер поставки'])
+        # print('Статус заказа:',row['Статус заказа'],'Номер поставки:',row['Номер поставки'])
         # print('Проверка шаблона ID поставки:', bool(re.match(self.pattern,row['Номер поставки'])))
 
-        if row['Статус обработки'] == 'confirm': # and bool(re.match(self.pattern,row['Номер поставки'])):
+        if row['Статус заказа'] == self.define_status[2]: # 'confirm': # and bool(re.match(self.pattern,row['Номер поставки'])):
             self._fetch_and_print_wb_label(int(row['Номер заказа']), self.app_context.printer_name)
         else:
             self.show_log("❌ Заказ не собран или не добавлен в поставку. Печать невозможна.", is_error=True)
@@ -974,6 +1221,10 @@ class FBSModeWB(ctk.CTkFrame):
                 else:
                     self.show_log("❌ Прямая печать не удалась. Проверьте принтер .", is_error=True)
                     if debug_info: print("❌ Прямая печать не удалась. Проверьте принтер .")
+                # Помечаем товар как обработанный -- это тоже надо закинуть в печать этикетки
+                self.fbs_df.loc[self.selected_row_index, "Статус обработки"] = self.assembly_status[1] # "Обработан"
+                # Обновление таблицы и раскраски
+                self.update_table(self.fbs_df)
             else:
                 self.show_log("❌ WB API не вернул данные этикетки.", is_error=True)
                 if debug_info: print("❌ WB API не вернул данные этикетки.")
@@ -1040,6 +1291,34 @@ class FBSModeWB(ctk.CTkFrame):
 
 
     # --- ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ---
+    def restore_entry_focus(self, event=None):
+        if self.editing:
+            return
+        self.scan_entry.focus_set()
+        self.focus_timer_id = self.after(100, self.restore_entry_focus)
+
+    def on_entry_focus_in(self, event=None):
+        if not self.editing:
+            # self.scanning_label.configure(text="Ожидание сканирования... 📱")
+            self.show_log(f"Ожидание сканирования...")
+
+    def on_entry_focus_out(self, event=None):
+        if not self.editing:
+            self.show_log(f"")
+
+    def reset_clear_timer(self, event=None):
+        if self.clear_timer_id:
+            self.after_cancel(self.clear_timer_id)
+        self.clear_timer_id = self.after(1000, self.clear_entry)
+
+    def clear_entry(self):
+        self.scan_entry.delete(0, "end")
+
+    def handle_keypress(self, event=None):
+        if self.data_table:
+            self.data_table.on_keypress(event)
+
+    #         ----------- выше надо сделать поправки всех дополнительных элементов ----------------
     def on_edit_start(self):
         self.editing = True
         if self.focus_timer_id:
@@ -1088,15 +1367,15 @@ class FBSModeWB(ctk.CTkFrame):
     def update_status(self,status:int=0,supply:str=None):
         if supply:
             mask = self.fbs_df['Номер поставки'] == supply
-            self.fbs_df.loc[mask, 'Статус обработки'] = self.define_status[status]
+            self.fbs_df.loc[mask, 'Статус заказа'] = self.define_status[status]
         else:
             # --- 1. Обработка пустых значений (Заполнение заданным дефолтным статусом) ---
             # Сначала заполняем NaN (стандартное отсутствие данных в Pandas)
-            self.fbs_df['Статус обработки'] = self.fbs_df['Статус обработки'].fillna(self.define_status[status])
+            self.fbs_df['Статус заказа'] = self.fbs_df['Статус заказа'].fillna(self.define_status[status])
 
             # Затем находим и заменяем пустые строки или строки, состоящие из пробелов
-            empty_string_mask = (self.fbs_df['Статус обработки'].astype(str).str.strip() == '')
-            self.fbs_df.loc[empty_string_mask, 'Статус обработки'] = self.define_status[status]
+            empty_string_mask = (self.fbs_df['Статус заказа'].astype(str).str.strip() == '')
+            self.fbs_df.loc[empty_string_mask, 'Статус заказа'] = self.define_status[status]
         self.update_table()
 
         # /home/markv7/PycharmProjects/Barcode_print/gui/fbs_wb_gui.py (внутри класса FBSModeWB)
@@ -1144,13 +1423,13 @@ class FBSModeWB(ctk.CTkFrame):
                 def map_new_status(row):
                     order_id = row['Номер заказа']
                     # Используем полученный статус, если он есть, иначе оставляем старый
-                    return status_map.get(order_id, row['Статус обработки'])
+                    return status_map.get(order_id, row['Статус заказа'])
                 if debug_info:
                     print('status_map',status_map)
                     print('-----------------------------------')
                 else:
                     # Обновляем колонку 'Статус доставки'
-                    self.fbs_df['Статус обработки'] = self.fbs_df.apply(map_new_status, axis=1)
+                    self.fbs_df['Статус заказа'] = self.fbs_df.apply(map_new_status, axis=1)
                     self.update_table()
 
                 self.show_log("✅ Статусы заказов успешно обновлены из WB API.", is_error=False)
@@ -1198,19 +1477,22 @@ class FBSModeWB(ctk.CTkFrame):
 
     def start_auto_focus(self):
         """Устанавливает фокус на поле сканирования."""
-        if self.scan_entry:
+        if self.scan_entry2:
             if hasattr(self, 'focus_timer_id') and self.focus_timer_id:
                 self.after_cancel(self.focus_timer_id)
 
-            self.focus_timer_id = self.after(100, self.scan_entry.focus_set)
+            self.focus_timer_id = self.after(100, self.scan_entry2.focus_set)
 
     def get_row_status(self, row):
         """Определяет статус строки для цветовой индикации"""
         # Если товар обработан - зеленый (независимо от наличия маркировки)
-        if row["Статус обработки"] == 'complete':
-            return "completed"  # Зеленый цвет для обработанных заказов
-        elif row["Статус обработки"] == 'confirm':
-            return 'confirm'  # Зеленый цвет для обработанных заказов
+        if row["Статус обработки"] == self.assembly_status[1]: # "Обработан"
+            return "collected order"  # Зеленый цвет для обработанных заказов
+        # Если поставка добавлена в доставку
+        if row["Статус заказа"] == self.define_status[3]: # 'complete':
+            return "completed"  # Аметист
+        elif row["Статус заказа"] == self.define_status[2]: #'confirm':
+            return 'confirm'  # Светло зеленый
 
         # # Если есть и штрихкод, и код маркировки - зеленый
         # if row["Штрихкод"] != "" and row["Код маркировки"] != "":

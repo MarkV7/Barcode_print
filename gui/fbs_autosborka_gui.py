@@ -312,9 +312,11 @@ class FBSMode(ctk.CTkFrame):
         self.table = EditableDataTable(
             self.table_container,
             dataframe=self.fbs_df,
+            columns='',
             max_rows=5000,
             header_font=("Segoe UI", 14, "bold"),
             cell_font=("Segoe UI", 14),
+            on_row_select='',
             readonly=False,
             on_edit_start=self.on_edit_start,
             on_edit_end=self.on_edit_end

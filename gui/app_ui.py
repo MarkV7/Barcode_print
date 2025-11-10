@@ -66,7 +66,7 @@ class AppUI:
             ("Возврат на склад", self.show_return),
             ("ФБО Ozon", self.show_ozon),
             ("ФБО Wildberries", self.show_wildberries),
-            #("Автосборка ФБС", self.show_autosborka_fbs),
+            # ("Автосборка ФБС", self.show_autosborka_fbs),
             ("Wildberries ФБС", self.show_wildberries_fbs),
             ("Ozon ФБС", self.show_ozon_fbs),
             ("Настройки", self.show_settings),
