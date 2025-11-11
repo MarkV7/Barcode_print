@@ -9894,3 +9894,31 @@
 [2025-11-10 13:03:29] STREAM b'IDAT' 62 270
 [2025-11-10 13:03:30] Starting new HTTPS connection (1): marketplace-api.wildberries.ru:443
 [2025-11-10 13:03:30] https://marketplace-api.wildberries.ru:443 "GET /api/v3/supplies?limit=1000&next=135615004 HTTP/1.1" 200 44352
+[2025-11-11 19:07:15] STREAM b'IHDR' 16 13
+[2025-11-11 19:07:15] STREAM b'pHYs' 41 9
+[2025-11-11 19:07:15] STREAM b'IDAT' 62 165
+[2025-11-11 19:07:15] STREAM b'IHDR' 16 13
+[2025-11-11 19:07:15] STREAM b'pHYs' 41 9
+[2025-11-11 19:07:15] STREAM b'IDAT' 62 163
+[2025-11-11 19:07:15] STREAM b'IHDR' 16 13
+[2025-11-11 19:07:15] STREAM b'pHYs' 41 9
+[2025-11-11 19:07:15] STREAM b'IDAT' 62 270
+[2025-11-11 19:07:33] STREAM b'IHDR' 16 13
+[2025-11-11 19:07:33] STREAM b'pHYs' 41 9
+[2025-11-11 19:07:33] STREAM b'IDAT' 62 165
+[2025-11-11 19:07:33] STREAM b'IHDR' 16 13
+[2025-11-11 19:07:33] STREAM b'pHYs' 41 9
+[2025-11-11 19:07:33] STREAM b'IDAT' 62 163
+[2025-11-11 19:07:33] STREAM b'IHDR' 16 13
+[2025-11-11 19:07:33] STREAM b'pHYs' 41 9
+[2025-11-11 19:07:33] STREAM b'IDAT' 62 270
+[2025-11-11 19:07:33] Starting new HTTPS connection (1): marketplace-api.wildberries.ru:443
+[2025-11-11 19:07:34] https://marketplace-api.wildberries.ru:443 "GET /api/v3/supplies?limit=1000&next=135615004 HTTP/1.1" 200 44590
+[2025-11-11 19:07:34] Подставлен ID поставки WB: WB-GI-192939079
+[2025-11-11 19:08:14] Ожидание сканирования...
+[2025-11-11 19:08:46] [DEBUG] save_data_to_context: сохраняю wb_fbs_supply_id = 'WB-GI-192939079'
+[2025-11-11 19:08:46] Сохраняю id поставки WB: WB-GI-192939079
+[2025-11-11 19:14:02] Подставлен ID поставки WB: WB-GI-192939079
+[2025-11-11 19:14:22] Ожидание сканирования...
+[2025-11-11 19:14:30] [DEBUG] save_data_to_context: сохраняю wb_fbs_supply_id = 'WB-GI-192939079'
+[2025-11-11 19:14:30] Сохраняю id поставки WB: WB-GI-192939079

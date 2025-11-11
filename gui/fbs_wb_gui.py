@@ -14,10 +14,39 @@ from sound_player import play_success_scan_sound, play_unsuccess_scan_sound
 from gui.gui_table import EditableDataTable
 from wildberries_fbs_api import WildberriesFBSAPI
 from printer_handler import LabelPrinter
+import logging
+
+# -----------------------------------------------------------
+# НАСТРОЙКА ЛОГИРОВАНИЯ
+# -----------------------------------------------------------
+log_file_name = "app.log"
+# Задаем базовую конфигурацию:
+# - log_file_name: Имя файла лога
+# - level: Уровень логирования (INFO - это информационные сообщения и выше: WARNING, ERROR, CRITICAL)
+# - format: Формат сообщения: Время - Уровень - Имя модуля - Сообщение
+logging.basicConfig(
+    filename=log_file_name,
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
+    encoding='utf-8' # Важно для корректной работы с кириллицей
+)
+
+# 1. Скрываем шумные логи от библиотек обработки изображений
+logging.getLogger('PIL').setLevel(logging.WARNING)
+logging.getLogger('Image').setLevel(logging.WARNING)
+logging.getLogger('fitz').setLevel(logging.WARNING)
+
+# 2. Скрываем шумные логи от HTTP-запросов (Wildberries API)
+logging.getLogger('urllib3').setLevel(logging.WARNING)
+logging.getLogger('requests').setLevel(logging.WARNING)
+
+# Добавляем логгер, который также выводит сообщения в консоль (если нужно видеть их и там)
+logging.getLogger().addHandler(logging.StreamHandler())
+
+# -----------------------------------------------------------
 
 # Переменная для хранения имени файла с новыми ШК
 NEW_BARCODES_FILE = "new_barcodes.csv"
-
 
 class FBSModeWB(ctk.CTkFrame):
     """
@@ -40,7 +69,7 @@ class FBSModeWB(ctk.CTkFrame):
         self.columns=[
                 "Номер заказа", "Служба доставки", "Покупатель", "Бренд", "Цена",
                 "Артикул поставщика", "Количество", "Размер",
-                "Штрихкод", 'Штрихкод WB', "Код маркировки", "Номер поставки", 
+                "Штрихкод", 'Штрихкод WB', "Код маркировки", "Номер поставки",
                 "Статус заказа", "Статус обработки",
             ]
         self.define_status = ('indefinite','new','confirm','complete','cancel')
@@ -124,16 +153,16 @@ class FBSModeWB(ctk.CTkFrame):
     def debug_print_first_row(self,data_df:DataFrame,number_row:int=0):
         """Выводит n-ю строку DataFrame self.fbs_df для проверки структуры данных."""
         if data_df.empty:
-            print("--- self.fbs_df пуст, нет данных для вывода. ---")
+            logging.info("--- self.fbs_df пуст, нет данных для вывода. ---")
             return
-        print("\n=======================================================")
-        print(f"✅ DEBUG: {number_row}-я строка DataFrame self.fbs_df:")
+        logging.info("\n=======================================================")
+        logging.info(f"✅ DEBUG: {number_row}-я строка DataFrame self.fbs_df:")
         # .iloc[0] безопасно извлекает строку по числовому индексу 0,
         # независимо от того, какие у DataFrame установлены индексы (строковые/числовые).
         first_row = data_df.iloc[number_row]
         # Вывод в формате Series (колонка: значение)
-        print(first_row)
-        print("=======================================================\n")
+        logging.info(first_row)
+        logging.info("=======================================================\n")
 
     def _load_new_barcodes(self, filename=NEW_BARCODES_FILE) -> pd.DataFrame:
         """Загружает новые добавленные штрихкоды из отдельного CSV-файла."""
@@ -432,7 +461,7 @@ class FBSModeWB(ctk.CTkFrame):
             self.show_log(f"Ошибка при загрузке файла: {str(e)}", is_error=True)
 
     def checkbox_event(self):
-        print("Checkbox toggled, current value:", self.check_var.get())
+        logging.info("Checkbox toggled, current value:", self.check_var.get())
 
 
     def on_arrow_key_release(self, event):
@@ -489,8 +518,8 @@ class FBSModeWB(ctk.CTkFrame):
             return
 
         self.show_log(f"Сканирование: {self.current_barcode}")
-        # print(str(self.current_barcode))
-        # print(self.fbs_df['Штрихкод'].astype(str))
+        # logging.info(str(self.current_barcode))
+        # logging.info(self.fbs_df['Штрихкод'].astype(str))
         # 1. Поиск: ищем  Штрихкод производителя в текущих заказах
         matches = self.fbs_df[(self.fbs_df['Штрихкод'].astype(str) == str(self.current_barcode))
                                 & (self.fbs_df["Статус обработки"] == self.assembly_status[0])].copy()
@@ -499,7 +528,7 @@ class FBSModeWB(ctk.CTkFrame):
         if not matches.empty:
             # --- Логика Сборки по сканированию (автоматическая) ---
             row_index = matches.index[0]
-            # print('row_index',row_index)
+            # logging.info('row_index',row_index)
             row = self.fbs_df.loc[row_index]
             self.selected_row_index = row_index
            # --- ДОБАВЛЕНИЕ ЛОГИКИ ВЫДЕЛЕНИЯ И ФОКУСА - --
@@ -508,14 +537,14 @@ class FBSModeWB(ctk.CTkFrame):
             play_success_scan_sound()
             if self.check_var.get() == 'on':
                 self.show_log(f"Печатаем этикетку {self.current_barcode} ШК  ")
-                print(f'Печатаем этикетку {self.current_barcode} ШК  ')
+                logging.info(f'Печатаем этикетку {self.current_barcode} ШК  ')
                 self.print_label_from_button()
         # 2. Несовпадение: возможно, это новый ШК или артикул для добавления
         else:
             # self.handle_unmatched_barcode(self.current_barcode) Этот метод реализовать позже
             self.show_log(f"Несовпадение: возможно, это новый {self.current_barcode} ШК или артикул ")
 
-        # print('row_index', row_index)
+        # logging.info('row_index', row_index)
         # self._select_row_by_index(row_index)
         # self.editing = True
         # self.start_auto_focus()
@@ -584,7 +613,7 @@ class FBSModeWB(ctk.CTkFrame):
             if not matches.empty:
                 # --- Логика Сборки по сканированию (автоматическая) ---
                 row_index = matches.index[0]
-                # print('row_index',row_index)
+                # logging.info('row_index',row_index)
                 row = self.fbs_df.loc[row_index]
                 self.selected_row_index = row_index
                 # --- ДОБАВЛЕНИЕ ЛОГИКИ ВЫДЕЛЕНИЯ И ФОКУСА - --
@@ -629,7 +658,7 @@ class FBSModeWB(ctk.CTkFrame):
                     self.show_log(
                         f"❌ Успешно в API WB привязан код маркировки {marking_code} к номеру заказа {order_id} ")
                 except Exception as e:
-                    print(f"❌ Ошибка API WB привязки кода маркировки {marking_code} к номеру заказа {order_id}: {str(e)}")
+                    logging.info(f"❌ Ошибка API WB привязки кода маркировки {marking_code} к номеру заказа {order_id}: {str(e)}")
                     self.show_log(
                         f"❌ Ошибка API WB привязки кода маркировки {marking_code} к номеру заказа {order_id}: {str(e)}",
                         is_error=True)
@@ -650,6 +679,9 @@ class FBSModeWB(ctk.CTkFrame):
                 if not label_printer.is_correct_gs1_format(marking_code):
                     play_unsuccess_scan_sound()
                     self.show_log("❌ Неверный формат кода маркировки", bg_color="#FFE0E0", text_color="red")
+                    self.input_mode = "marking"
+                    self.scan_entry.delete(0, "end")
+                    self.restore_entry_focus()
                     return
 
                 self.fbs_df.at[self.selected_row_index, "Код маркировки"] = marking_code
@@ -663,7 +695,7 @@ class FBSModeWB(ctk.CTkFrame):
 
             if self.check_var.get() == 'on':
                 self.show_log(f"Печатаем этикетку {self.pending_barcode} ШК  ")
-                print(f'Печатаем этикетку {self.pending_barcode} ШК  ')
+                logging.info(f'Печатаем этикетку {self.pending_barcode} ШК  ')
                 self.print_label_from_button()
 
             # Сохраняем данные в контекст
@@ -809,7 +841,7 @@ class FBSModeWB(ctk.CTkFrame):
         WB_BARCODE_COL = "Баркод  Wildberries"
 
         if WB_BARCODE_COL not in self.app_context.df.columns:
-            print(f"ERROR: Столбец '{WB_BARCODE_COL}' не найден в базе данных.")
+            logging.info(f"ERROR: Столбец '{WB_BARCODE_COL}' не найден в базе данных.")
             return None
 
         # Очистка и приведение типов для безопасного сравнения
@@ -918,7 +950,7 @@ class FBSModeWB(ctk.CTkFrame):
                                 new_orders_df.loc[idx, "Бренд"] = additional_info["Бренд"]
                 except Exception as e:
                     self.show_log(f"❌ Ошибка при попытке сопоставить строки с внутренней базой: {e}", is_error=True)
-                    print(f"❌ Ошибка при попытке сопоставить строки с внутренней базой: {e}")
+                    logging.info(f"❌ Ошибка при попытке сопоставить строки с внутренней базой: {e}")
                 # Объединяем с текущей таблицей (удаляя дубликаты по 'Номер заказа')
                 self.fbs_df = pd.concat([self.fbs_df, new_orders_df], ignore_index=True)
                 self.fbs_df = self.fbs_df.drop_duplicates(subset=['Номер заказа'], keep='last')
@@ -931,7 +963,7 @@ class FBSModeWB(ctk.CTkFrame):
 
         except Exception as e:
             self.show_log(f"❌ Ошибка загрузки заказов WB: {e}", is_error=True)
-            print(f"❌ Ошибка загрузки заказов WB: {e}")
+            logging.info(f"❌ Ошибка загрузки заказов WB: {e}")
             play_unsuccess_scan_sound()
 
     def create_new_supply(self):
@@ -997,14 +1029,14 @@ class FBSModeWB(ctk.CTkFrame):
         start_next = 135615004
         response = self.api.get_supplies(params={"limit": 1000, "next": start_next})
         get_next = response['next']
-        if debug_info:  print('get_next:', get_next)
-        if debug_info:  print('Кол-во отданных записей:',len(response['supplies']))
+        if debug_info:  logging.info('get_next:', get_next)
+        if debug_info:  logging.info('Кол-во отданных записей:',len(response['supplies']))
         if len(response['supplies']) > 990:
             self.show_log("Есть необходимость настроить стартовую переменную. Обратитесь к разработчику !!!")
-            print("Есть необходимость настроить стартовую переменную. Обратитесь к разработчику !!!")
+            logging.info("Есть необходимость настроить стартовую переменную. Обратитесь к разработчику !!!")
         list_supplies = [item['id'] for item in response['supplies'] if item['done'] == False]
-        if debug_info:  print('Кол-во активных поставок:', len(list_supplies))
-        if debug_info:  print(list_supplies)
+        if debug_info:  logging.info('Кол-во активных поставок:', len(list_supplies))
+        if debug_info:  logging.info(list_supplies)
         return list_supplies
 
     def order_relation_supply(self):
@@ -1012,7 +1044,7 @@ class FBSModeWB(ctk.CTkFrame):
         list_supplies = self.getting_supplies()
     #  далее поработать получить сборочные задания к каждой поставке
         contain_supply = [{"supplyId":supplyId, "orders":self.api.get_orders_in_supply(supplyId)["orders"]} for supplyId in list_supplies]
-        if debug_info:  print('Кол-во активных поставок:', len(contain_supply))
+        if debug_info:  logging.info('Кол-во активных поставок:', len(contain_supply))
         # обновляем значения в таблице
         if not contain_supply:
             self.show_log("Нет данных для обновления поставок.", is_error=False)
@@ -1021,7 +1053,7 @@ class FBSModeWB(ctk.CTkFrame):
         for item in  contain_supply:
             supplyId_t = item['supplyId']
             orders = [id_item['id'] for id_item in item['orders']]
-            # print(supplyId_t,': ',orders)
+            # logging.info(supplyId_t,': ',orders)
             if orders:
                 mask = self.fbs_df['Номер заказа'].isin(orders)
                 self.fbs_df.loc[mask, 'Номер поставки'] = supplyId_t
@@ -1037,7 +1069,7 @@ class FBSModeWB(ctk.CTkFrame):
             # self.assembly_button.configure(state="disabled")
             # self.print_button.configure(state="disabled")
             return
-        # print(f"DEBUG:FBSModeWB _handle_row_select received index: {row_index}")
+        # logging.info(f"DEBUG:FBSModeWB _handle_row_select received index: {row_index}")
         self.selected_row_index = row_index
         try:
             row = self.fbs_df.loc[row_index]
@@ -1119,22 +1151,22 @@ class FBSModeWB(ctk.CTkFrame):
 
         self.show_log(
             f"🔗 Попытка завершить сборку заказа {order_id} и добавить его в поставку {selected_supply_id}...")
-        if debug_info: print(f"🔗 Попытка завершить сборку заказа {order_id} и добавить его в поставку {selected_supply_id}...")
+        if debug_info: logging.info(f"🔗 Попытка завершить сборку заказа {order_id} и добавить его в поставку {selected_supply_id}...")
         # 1. Добавление заказа в поставку WB (Шаг 5 - часть 1)
         try:
             self.show_log(f"WB API: Добавление заказа {order_id} в поставку {selected_supply_id}...")
             if debug_info:
-                print(f"WB API: Добавление заказа {order_id} в поставку {selected_supply_id}...")
-                print(f"Тип данных order_id - {type(order_id)} Тип данных selected_supply_id - {type(selected_supply_id)} ")
+                logging.info(f"WB API: Добавление заказа {order_id} в поставку {selected_supply_id}...")
+                logging.info(f"Тип данных order_id - {type(order_id)} Тип данных selected_supply_id - {type(selected_supply_id)} ")
 
             json_obj = self.api.add_order_to_supply(selected_supply_id, order_id)
-            print(json_obj)
+            logging.info(json_obj)
 
             self.show_log(f"✅ Заказ {order_id} успешно добавлен в поставку {selected_supply_id} (WB API).")
-            if debug_info: print(f"✅ Заказ {order_id} успешно добавлен в поставку {selected_supply_id} (WB API).")
+            if debug_info: logging.info(f"✅ Заказ {order_id} успешно добавлен в поставку {selected_supply_id} (WB API).")
         except Exception as e:
             self.show_log(f"❌ Ошибка добавления заказа {order_id} в поставку {selected_supply_id}: {e}", is_error=True)
-            if debug_info: print(f"❌ Ошибка добавления заказа {order_id} в поставку {selected_supply_id}: {e}")
+            if debug_info: logging.info(f"❌ Ошибка добавления заказа {order_id} в поставку {selected_supply_id}: {e}")
             return
 
         # 2. Обновление статуса в DataFrame (Шаг 6)
@@ -1187,9 +1219,9 @@ class FBSModeWB(ctk.CTkFrame):
             return
 
         row = self.fbs_df.loc[self.selected_row_index]
-        # print('Номер заказа:', row["Номер заказа"], 'Индекс строки:', self.selected_row_index)
-        # print('Статус заказа:',row['Статус заказа'],'Номер поставки:',row['Номер поставки'])
-        # print('Проверка шаблона ID поставки:', bool(re.match(self.pattern,row['Номер поставки'])))
+        # logging.info('Номер заказа:', row["Номер заказа"], 'Индекс строки:', self.selected_row_index)
+        # logging.info('Статус заказа:',row['Статус заказа'],'Номер поставки:',row['Номер поставки'])
+        # logging.info('Проверка шаблона ID поставки:', bool(re.match(self.pattern,row['Номер поставки'])))
 
         if row['Статус заказа'] == self.define_status[2]: # 'confirm': # and bool(re.match(self.pattern,row['Номер поставки'])):
             self._fetch_and_print_wb_label(int(row['Номер заказа']), self.app_context.printer_name)
@@ -1201,7 +1233,7 @@ class FBSModeWB(ctk.CTkFrame):
         debug_info = False
         try:
             self.show_log("WB API: Запрос  этикетки...")
-            if debug_info: print("WB API: Запрос  этикетки...")
+            if debug_info: logging.info("WB API: Запрос  этикетки...")
             # Запрашиваем стикер в формате ZPL
             stikers_type = "png"
             width_type = 40 #58
@@ -1212,26 +1244,26 @@ class FBSModeWB(ctk.CTkFrame):
 
             if stickers and isinstance(stickers, list) and 'file' in stickers[0]:
                 label_base64_data = stickers[0]['file']
-                if debug_info: print(f"✅ Этикетка WB получена, пытаемся напечатать")
+                if debug_info: logging.info(f"✅ Этикетка WB получена, пытаемся напечатать")
                 # print_wb_ozon_label сам определяет, что это ZPL, и отправит его на печать.
                 if self.label_printer.print_wb_ozon_label(label_base64_data, printer_target, type=stikers_type):
                 # if self.label_printer.print_on_windows(image = label_base64_data):
                     self.show_log(f"✅ Этикетка WB для {order_id} успешно отправлена на печать.", is_error=False)
-                    if debug_info: print(f"✅ Этикетка WB для {order_id} успешно отправлена на печать.")
+                    if debug_info: logging.info(f"✅ Этикетка WB для {order_id} успешно отправлена на печать.")
                 else:
                     self.show_log("❌ Прямая печать не удалась. Проверьте принтер .", is_error=True)
-                    if debug_info: print("❌ Прямая печать не удалась. Проверьте принтер .")
+                    if debug_info: logging.info("❌ Прямая печать не удалась. Проверьте принтер .")
                 # Помечаем товар как обработанный -- это тоже надо закинуть в печать этикетки
                 self.fbs_df.loc[self.selected_row_index, "Статус обработки"] = self.assembly_status[1] # "Обработан"
                 # Обновление таблицы и раскраски
                 self.update_table(self.fbs_df)
             else:
                 self.show_log("❌ WB API не вернул данные этикетки.", is_error=True)
-                if debug_info: print("❌ WB API не вернул данные этикетки.")
+                if debug_info: logging.info("❌ WB API не вернул данные этикетки.")
 
         except Exception as e:
             self.show_log(f"❌ Ошибка получения или печати этикетки WB: {e}", is_error=True)
-            if debug_info: print(f"❌ Ошибка получения или печати этикетки WB: {e}")
+            if debug_info: logging.info(f"❌ Ошибка получения или печати этикетки WB: {e}")
             play_unsuccess_scan_sound()
 
     def transfer_supply_to_delivery_button(self):
@@ -1239,7 +1271,7 @@ class FBSModeWB(ctk.CTkFrame):
         selected_supply_id = self.wb_supply_id_var.get().strip()
         try:
             self.show_log(f"WB API: Передаем поставку {selected_supply_id} в доставку", is_error=True)
-            if debug_info: print(f"WB API: Передаем поставку {selected_supply_id} в доставку")
+            if debug_info: logging.info(f"WB API: Передаем поставку {selected_supply_id} в доставку")
             else:
                 self.api.close_supply_complete(supplyId = selected_supply_id)
             self.update_status(status=3, supply=selected_supply_id)
@@ -1250,7 +1282,7 @@ class FBSModeWB(ctk.CTkFrame):
 
         except Exception as e:
             self.show_log(f"❌ Ошибка получения или печати этикетки WB: {e}", is_error=True)
-            if debug_info: print(f"❌ Ошибка получения или печати этикетки WB: {e}")
+            if debug_info: logging.info(f"❌ Ошибка получения или печати этикетки WB: {e}")
 
     # Фрагмент кода в классе FBSModeWB (или там, где определен комбобокс)
 
@@ -1336,7 +1368,7 @@ class FBSModeWB(ctk.CTkFrame):
         try:
             self.app_context.fbs_table = self.fbs_df.copy()
             wb_supply_id = self.wb_supply_id_var.get().strip()
-            print(f"[DEBUG] save_data_to_context: сохраняю wb_fbs_supply_id = '{wb_supply_id}'")
+            logging.info(f"[DEBUG] save_data_to_context: сохраняю wb_fbs_supply_id = '{wb_supply_id}'")
             self.show_log(f"Сохраняю id поставки WB: {wb_supply_id}")
             self.app_context.wb_fbs_supply_id = wb_supply_id
         except Exception as e:
@@ -1396,25 +1428,25 @@ class FBSModeWB(ctk.CTkFrame):
             order_ids = list(map(int, raw_ids))
         except KeyError:
             self.show_log("❌ Ошибка: Колонка 'Номер заказа' не найдена.", is_error=True)
-            if debug_info: print("❌ Ошибка: Колонка 'Номер заказа' не найдена.")
+            if debug_info: logging.info("❌ Ошибка: Колонка 'Номер заказа' не найдена.")
             return
 
         if not order_ids:
             self.show_log("Нет ID сборочных заданий для проверки.", is_error=False)
-            if debug_info: print("Нет ID сборочных заданий для проверки.")
+            if debug_info: logging.info("Нет ID сборочных заданий для проверки.")
             return
 
         try:
             self.show_log(f"WB API: Запрос статусов для {len(order_ids)} заказов...")
-            if debug_info: print(f"WB API: Запрос статусов для {len(order_ids)} заказов...")
+            if debug_info: logging.info(f"WB API: Запрос статусов для {len(order_ids)} заказов...")
             # 2. Вызов нового метода API
             chek_orders = {"orders": order_ids }
             status_response = self.api.get_status_orders(chek_orders)
-            if debug_info: print('chek_orders:', chek_orders)
+            if debug_info: logging.info('chek_orders:', chek_orders)
             # 3. Обработка и обновление DataFrame
             statuses = status_response.get('orders', [])
-            if debug_info: print('status_response:',status_response)
-            if debug_info: print('statuses:', statuses)
+            if debug_info: logging.info('status_response:',status_response)
+            if debug_info: logging.info('statuses:', statuses)
             if statuses:
                 # Преобразуем список статусов в словарь для быстрого поиска: {id: status}
                 status_map = {item['id']: item['supplierStatus'] for item in statuses}
@@ -1425,25 +1457,25 @@ class FBSModeWB(ctk.CTkFrame):
                     # Используем полученный статус, если он есть, иначе оставляем старый
                     return status_map.get(order_id, row['Статус заказа'])
                 if debug_info:
-                    print('status_map',status_map)
-                    print('-----------------------------------')
+                    logging.info('status_map',status_map)
+                    logging.info('-----------------------------------')
                 else:
                     # Обновляем колонку 'Статус доставки'
                     self.fbs_df['Статус заказа'] = self.fbs_df.apply(map_new_status, axis=1)
                     self.update_table()
 
                 self.show_log("✅ Статусы заказов успешно обновлены из WB API.", is_error=False)
-                if debug_info: print("✅ Статусы заказов успешно обновлены из WB API.")
+                if debug_info: logging.info("✅ Статусы заказов успешно обновлены из WB API.")
             else:
                 self.show_log("WB API не вернул статусы заказов в ожидаемом формате.", is_error=True)
-                if debug_info: print("WB API не вернул статусы заказов в ожидаемом формате.")
+                if debug_info: logging.info("WB API не вернул статусы заказов в ожидаемом формате.")
 
         # except requests.exceptions.HTTPError as e:
         #     self.show_log(f"❌ Ошибка API при получении статусов: {e}", is_error=True)
         except Exception as e:
             self.show_log(f"❌ Непредвиденная ошибка: {e}", is_error=True)
             if debug_info:
-                print(f"❌ Непредвиденная ошибка: {e}")
+                logging.info(f"❌ Непредвиденная ошибка: {e}")
 
 
     def update_table(self, df: pd.DataFrame=None):
@@ -1468,6 +1500,10 @@ class FBSModeWB(ctk.CTkFrame):
         if self.log_label:
             color = "red" if is_error else "green"
             self.log_label.configure(text=message, text_color=color)
+            if is_error:
+                logging.error(message)
+            else:
+                logging.info(message)
 
         if hasattr(self, 'log_timer_id') and self.log_timer_id:
             self.after_cancel(self.log_timer_id)
