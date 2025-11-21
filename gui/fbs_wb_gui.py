@@ -679,9 +679,9 @@ class FBSModeWB(ctk.CTkFrame):
                 if not label_printer.is_correct_gs1_format(marking_code):
                     play_unsuccess_scan_sound()
                     self.show_log("❌ Неверный формат кода маркировки", bg_color="#FFE0E0", text_color="red")
-                    self.input_mode = "marking"
-                    self.scan_entry.delete(0, "end")
-                    self.restore_entry_focus()
+                    # self.input_mode = "marking"
+                    # self.scan_entry.delete(0, "end")
+                    # self.restore_entry_focus()
                     return
 
                 self.fbs_df.at[self.selected_row_index, "Код маркировки"] = marking_code
@@ -795,6 +795,7 @@ class FBSModeWB(ctk.CTkFrame):
             # Обновляем существующую запись
             idx = matches.index[0]
             self.app_context.df.at[idx, "Штрихкод производителя"] = barcode
+            self.app_context.df.at[idx, "Баркод  Wildberries"] = row['Штрихкод WB']
         else:
             # Создаем новую запись
             new_row = pd.DataFrame([{
@@ -802,7 +803,8 @@ class FBSModeWB(ctk.CTkFrame):
                 "Размер": row["Размер"],
                 "Штрихкод производителя": barcode,
                 "Наименование поставщика": row.get("Бренд", ""),
-                "Бренд": row.get("Бренд", "")
+                "Бренд": row.get("Бренд", ""),
+                "Баркод  Wildberries":row.get("Штрихкод WB", "")
             }])
             self.app_context.df = pd.concat([self.app_context.df, new_row], ignore_index=True)
 

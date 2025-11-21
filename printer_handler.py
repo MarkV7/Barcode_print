@@ -370,9 +370,34 @@ class LabelPrinter:
             result = '\n'.join(new_zpl_lines)
         return  result.encode('utf-8', errors='ignore')
 
+    def print_ozon_label(self, file_name:str, file_content:bytes)-> bool:
+        file_extension = 'png'
+        decoded_data = self._convert_pdf_to_image(file_content)
+        temp_dir = "debug_labels"
+        os.makedirs(temp_dir, exist_ok=True)
+        filename = os.path.join(temp_dir, f"{file_name}_{datetime.now().strftime('%H%M%S')}.{file_extension}")
+        try:
+            with open(filename, "wb") as f:
+                f.write(decoded_data)
+            logging.info(f"✅ DEBUG: Сохранен файл этикетки для анализа: {filename}")
+            print(f"✅ DEBUG: Сохранен файл этикетки для анализа: {filename}")
+        except Exception as e:
+            logging.error(f"❌ Ошибка при сохранении файла отладки: {e}")
+            print(f"❌ Ошибка при сохранении файла отладки: {e}")
+            return False
+        log("🔎 Формат: PNG. Выполняю печать.")
+        try:
+            self.print_on_windows_light(filename)
+            logging.info(f"✅ Этикетка успешно напечатана")
+            print(f"✅ Этикетка успешно напечатана")
+        except Exception as e:
+            logging.error(f"❌ Ошибка печати фала:{filename} на принтере {self.printer_name}:{e}")
+            print(f"❌ Ошибка печати фала:{filename} на принтере {self.printer_name}:{e}")
+            return False
+        return True
+
     # НОВЫЙ МЕТОД: Точка входа для печати WB/Ozon этикеток
-    def print_wb_ozon_label(self, label_data_base64: str, order_id: str = 'temp', type: str = 'zpl'):
-    # def print_wb_ozon_label(self, label_data_base64: str, *args, **kwargs) -> bool:
+    def print_wb_ozon_label(self, label_data_base64: str, order_id: str = 'temp', type: str = 'zpl')-> bool:
         """
         Универсальный метод печати для WB (ZPL) и png.
         Определяет формат данных и вызывает соответствующий низкоуровневый метод печати.

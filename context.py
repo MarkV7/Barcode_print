@@ -15,6 +15,8 @@ class AppContext:
         self.fbo_table_wb: pd.DataFrame = None
         self.fbs_table: pd.DataFrame = None  # Таблица FBS сборки WB
         self.fbs_table_ozon: pd.DataFrame = None  # Таблица FBS сборки Ozon
+        self.ozon_fbs_order_id = ''
+        self.wb_fbs_supply_id = ''
         self.printer_name: str = 'по умолчанию'
         self.wb_api_token: str = ''
         self.ozon_client_id: str = ''
@@ -39,6 +41,7 @@ class AppContext:
             "fbo_table_wb": self.fbo_table_wb.to_dict(orient='records') if isinstance(self.fbo_table_wb, pd.DataFrame) else None,
             "fbs_table": self.fbs_table.to_dict(orient='records') if isinstance(self.fbs_table, pd.DataFrame) else None,
             "fbs_table_ozon": self.fbs_table_ozon.to_dict(orient='records') if isinstance(self.fbs_table_ozon, pd.DataFrame) else None,
+            "ozon_fbs_order_id": getattr(self, "ozon_fbs_order_id", ""),
             "wb_fbs_supply_id": getattr(self, "wb_fbs_supply_id", "")
         }
         if filepath.endswith(".pkl"):
@@ -81,6 +84,7 @@ class AppContext:
             self.fbo_table_wb = pd.DataFrame(data["fbo_table_wb"]) if data.get("fbo_table_wb") else None
             self.fbs_table = pd.DataFrame(data["fbs_table"]) if data.get("fbs_table") else None
             self.fbs_table_ozon= pd.DataFrame(data["fbs_table_ozon"]) if data.get("fbs_table_ozon") else None
+            self.ozon_fbs_order_id = data.get("ozon_fbs_order_id", "")
             self.wb_fbs_supply_id = data.get("wb_fbs_supply_id", "")
 
             print(f"✅ Контекст успешно загружен из {filepath}")
