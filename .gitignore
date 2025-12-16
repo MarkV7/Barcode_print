@@ -8,3 +8,6 @@ __pycache__/
 debug_log.txt
 *.pyc
 requirements.txt
+test_fbs_logic.py
+app.log
+debug_log.txt

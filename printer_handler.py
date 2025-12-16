@@ -21,43 +21,6 @@ except ImportError:
     print(msg)
     fitz = None
 
-# === УСЛОВНЫЙ ИМПОРТ И ФЛАГ ===
-# IS_WINDOWS = sys.platform == 'win32'
-# # УСЛОВНЫЙ ИМПОРТ ДЛЯ WINDOWS-СПЕЦИФИЧНЫХ МОДУЛЕЙ
-# if IS_WINDOWS:
-#     # 1. На Windows импортируем настоящие библиотеки
-#     try:
-#         import win32print
-#         import win32ui
-#         from PIL import ImageWin
-#     except ImportError:
-#         # Если даже на Windows не установлен pywin32, переключаемся на ZPL
-#         IS_WINDOWS = False
-#         print("❌ WARNING: pywin32 не найден, печать RAW невозможна. Будет использован ZPL/Socket.")
-# else:
-#     # 2. На Linux/macOS: Импортируем заглушки из файлов win32print.py и win32ui.py
-#     try:
-#         # ВАЖНО: Добавляем текущую директорию, чтобы найти файлы-заглушки
-#         # Это помогает Python найти win32print.py в локальной папке
-#         if '.' not in sys.path:
-#             sys.path.append('.')
-#
-#         import win32print  # Это должен быть ваш win32print.py
-#         import win32ui  # Это должен быть ваш win32ui.py
-#
-#
-#         # Определяем заглушку ImageWin, если она используется в print_on_windows
-#         class ImageWin:
-#             class Dib:
-#                 def __init__(self, *args, **kwargs): pass
-#
-#                 def draw(self, *args, **kwargs): print("[MOCK] Имитация отрисовки DIB.")
-#         print("✅ Linux: Заглушки win32print/win32ui успешно загружены.")
-#
-#     except ImportError as e:
-#         print(f"❌ КРИТИЧЕСКАЯ ОШИБКА: Не удалось найти файлы-заглушки win32print.py/win32ui.py: {e}")
-#         # Ошибка импорта здесь не должна быть SIGSEGV, но укажет, что файлов нет
-
 if sys.platform == 'linux':
     IS_WINDOWS = False
 else:
@@ -75,10 +38,12 @@ logging.basicConfig(
     format="%(asctime)s %(message)s",
     datefmt="[%Y-%m-%d %H:%M:%S]"
 )
+# Получаем логгер для этого модуля
+logger = logging.getLogger(__name__)
 
 def log(msg):
-    logging.info(msg)
-    print(f"[DEBUG] {msg}")
+    logger.info(msg)
+    # print(f"[DEBUG] {msg}")
 
 
 class LabelPrinter:
@@ -88,50 +53,131 @@ class LabelPrinter:
         self.label_size_mm = (58, 40)  # размер этикетки в мм
         self.RAW_PRINTER_PORT = 9100  # Стандартный порт для RAW печати ZPL
 
+        # --- Константы для пересчета и печати ---
+        # 1 мм ≈ 2.835 pt
+        self.DPI_DEFAULT = 300  # Используем 300 DPI как стандарт для высококачественной печати/ресайза
+        self.MM_TO_PIX = self.DPI_DEFAULT / 25.4  # 11.811 пикселей на мм
+
+        # Константы для финального размера этикетки Ozon (58x40 мм)
+        self.FINAL_LABEL_W_MM = 58.0
+        self.FINAL_LABEL_H_MM = 40.0
+        self.ZOOM = 0.7
+        # Расчет финального размера в пикселях при 300 DPI
+        self.FINAL_LABEL_W_PX = round(self.FINAL_LABEL_W_MM * self.MM_TO_PIX * self.ZOOM) # ~685 пикселей
+        self.FINAL_LABEL_H_PX = round(self.FINAL_LABEL_H_MM * self.MM_TO_PIX * self.ZOOM) # ~472 пикселя
         # --- Внутренние методы для печати ---
         # -----------------------------------------------------------------
 
-    def _convert_pdf_to_image(self, pdf_bytes: bytes, dpi: int = 300) -> Optional[Image.Image]:
+    def _convert_pdf_to_image(self, pdf_bytes: bytes,
+                              target_width_mm: Optional[float] = None,
+                              target_height_mm: Optional[float] = None) -> Image.Image:
         """
-        Конвертирует PDF (в виде байтов) в объект PIL Image.
-        Требуется библиотека PyMuPDF (fitz).
+        Конвертирует PDF в изображение PIL.Image, масштабируя его до нужных размеров в мм.
         """
-        if not fitz:
-            log("❌ Ошибка: Библиотека PyMuPDF (fitz) не найдена. Конвертация PDF невозможна.")
-            return None
+        if fitz is None:
+            raise RuntimeError("PyMuPDF (fitz) не установлен. Конвертация PDF невозможна.")
+        # 1. ДИАГНОСТИКА И ЗАЩИТА ТИПОВ
+        # Сценарий А: Пришла строка (Base64) -> Декодируем
+        if isinstance(pdf_bytes, str):
+            try:
+                pdf_bytes = base64.b64decode(pdf_bytes)
+            except Exception as e:
+                raise ValueError(f"Ошибка декодирования входной строки Base64: {e}")
+
+        # Сценарий Б: Пришли байты, но это НЕ PDF (начинаются не с %PDF),
+        # возможно это байты Base64 (как было в вашей ошибке b'JVBER...')
+        elif isinstance(pdf_bytes, bytes) and not pdf_bytes.startswith(b'%PDF'):
+            try:
+                # Пытаемся декодировать как Base64
+                decoded = base64.b64decode(pdf_bytes)
+                if decoded.startswith(b'%PDF'):
+                    pdf_bytes = decoded
+                    # print("✅ Успешно распознаны и декодированы байты Base64")
+            except Exception:
+                # Если не вышло, оставляем как есть, упадет на следующей проверке
+                pass
+
+        # Проверка на пустоту
+        if not pdf_bytes:
+            raise ValueError("На конвертацию переданы пустые данные (None или 0 байт)")
+        # Проверка сигнатуры PDF (должен начинаться с %PDF)
+        if not pdf_bytes.startswith(b'%PDF'):
+            # Если данные есть, но это не PDF, логируем первые 20 байт для отладки
+            raise ValueError(f"Данные не являются PDF файлом (Signature mismatch). Начало: {pdf_bytes[:20]}")
+        # print(f"[DEBUG] Конвертация PDF: тип={type(pdf_bytes)}, размер={len(pdf_bytes)} байт")
 
         try:
-            # 1. Открытие документа из байтов
+            logging.info('1. Загрузка PDF из байтов')
+            # 1. Загрузка PDF из байтов
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-            if not doc:
-                log("❌ Не удалось открыть PDF-документ из байтов.")
-                return None
+            page = doc[0]
+            # Константа 1 мм ≈ 2.835 pt
+            PT_TO_MM = 2.835
 
-            # 2. Рендеринг первой страницы
-            page = doc.load_page(0)
 
-            # Установка матрицы трансформации для нужного DPI
-            zoom_factor = dpi / 72.0  # 72 dpi - стандарт для PDF
-            matrix = fitz.Matrix(zoom_factor, zoom_factor)
+            if target_width_mm is not None:
+                # Расчет масштаба для подгонки под конкретную ширину
+                current_width_pt = page.rect.width
+                current_width_mm = current_width_pt / PT_TO_MM
+                scale_factor = target_width_mm / current_width_mm
 
-            # Получение пиксмапа (растеризация)
+                # Применяем масштабирование
+                matrix = fitz.Matrix(scale_factor, scale_factor)
+
+                print(
+                    f"Текущая ширина PDF: {current_width_mm:.2f} мм. Целевая: {target_width_mm} мм. Масштаб: {scale_factor:.2f}")
+            else:
+                # Если масштабирование не задано (target_width_mm = None),
+                # используем фиксированный высокий DPI для качественного рендеринга.
+                # 72 - исходное разрешение PDF в МуPDF, 300 - целевое DPI
+                scale_factor = self.DPI_DEFAULT / 72
+                matrix = fitz.Matrix(scale_factor, scale_factor)
+                print(f"Масштабирование не требуется (target_width_mm = None). Использование DPI: {self.DPI_DEFAULT}.")
+
+            logging.info('2. Рендеринг страницы в Pixmap')
+            # 2. Рендеринг страницы в Pixmap
             pix = page.get_pixmap(matrix=matrix, alpha=False)
+
+            logging.info('3. Конвертация в PIL.Image')
+            # 3. Конвертация в PIL.Image
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            print(f"3. Конвертация в PIL.Image. Размер после рендеринга: {img.size}")
             doc.close()
+            # --- ФИНАЛЬНАЯ ОБРАБОТКА: ПОВОРОТ И РЕСАЙЗ/ОБРЕЗКА ---
 
-            # 3. Конвертация Pixmap в PIL Image
-            img_data = pix.tobytes("ppm")
-            image = Image.open(BytesIO(img_data))
+            # 4. Поворот на -90 градусов (90 градусов по часовой стрелке)
+            # expand=True гарантирует, что изображение расширится для размещения повернутого содержимого
+            # PIL.Image.rotate(-90) выполняет поворот по часовой стрелке
+            image = img.rotate(90, expand=True)
+            print(f"4. Поворот на -90 градусов (по часовой). Размер после поворота: {image.size}")
 
-            # 4. Преобразование в монохромный режим (L: grayscale, 1: monochrome)
-            # Это критически важно для термопринтеров.
-            image = image.convert('L').convert('1')
+            # 5. Финальное приведение к размеру 58x40 мм (при {self.DPI_DEFAULT} DPI)
+            target_size_px = (self.FINAL_LABEL_W_PX, self.FINAL_LABEL_H_PX)
 
-            log(f"✅ PDF успешно конвертирован в ч/б изображение {image.size} @ {dpi} DPI.")
-            return image
+            # Обрезка/Ресайз (для Ozon-этикеток это часто обрезка, т.к. PDF может быть A4)
+
+            # Ресайз до целевого размера с сохранением пропорций
+            image.thumbnail(target_size_px, Image.Resampling.LANCZOS)
+
+            # Создаем новое изображение целевого размера с белым фоном
+            final_image = Image.new("RGB", target_size_px, "white")
+
+            # Вставляем ресайзенное изображение в центр
+            x_offset = (final_image.width - image.width) // 2
+            y_offset = (final_image.height - image.height) // 2
+            final_image.paste(image, (x_offset, y_offset))
+
+            print(
+                f"5. Финальный размер: {final_image.size} ({self.FINAL_LABEL_W_MM}x{self.FINAL_LABEL_H_MM} мм при {self.DPI_DEFAULT} DPI)")
+
+            return final_image
+
+            return img
 
         except Exception as e:
-            log(f"❌ Критическая ошибка при конвертации PDF в Image: {e}")
-            return None
+            # logging.error(f"Ошибка конвертации PDF в Image: {e}")
+            raise RuntimeError(f"Ошибка конвертации PDF в Image: {e}")
+
 
     def print_png_gdi_from_file(self, png_path: str):
         """
@@ -370,15 +416,17 @@ class LabelPrinter:
             result = '\n'.join(new_zpl_lines)
         return  result.encode('utf-8', errors='ignore')
 
-    def print_ozon_label(self, file_name:str, file_content:bytes)-> bool:
+    def print_ozon_label_fbs(self, file_content:bytes)-> bool:
         file_extension = 'png'
-        decoded_data = self._convert_pdf_to_image(file_content)
+        decoded_data = self._convert_pdf_to_image(file_content) #.encode())
         temp_dir = "debug_labels"
         os.makedirs(temp_dir, exist_ok=True)
-        filename = os.path.join(temp_dir, f"{file_name}_{datetime.now().strftime('%H%M%S')}.{file_extension}")
+        filename = os.path.join(temp_dir, f"temp_{datetime.now().strftime('%H%M%S')}.{file_extension}")
         try:
-            with open(filename, "wb") as f:
-                f.write(decoded_data)
+            # with open(filename, "wb") as f:
+            #     f.write(decoded_data)
+            # И заменить его на:
+            decoded_data.save(filename, format='PNG')  # <-- Правильный способ
             logging.info(f"✅ DEBUG: Сохранен файл этикетки для анализа: {filename}")
             print(f"✅ DEBUG: Сохранен файл этикетки для анализа: {filename}")
         except Exception as e:

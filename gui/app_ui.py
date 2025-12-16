@@ -126,6 +126,24 @@ class AppUI:
         else:
             print("⚠️ Нет данных для сохранения или не указан путь к файлу")
 
+    def save_df_to_excel_cis(self):
+        """
+        Сохраняет DataFrame из контекста обратно в Excel по пути Data/
+        """
+        temp_dir = "Data"
+        file_name = "Справочник кодов маркировки.xlsx"
+        os.makedirs(temp_dir, exist_ok=True)
+        filepath = os.path.join(temp_dir,file_name)
+        if self.context.df_cis is not None:
+            try:
+                # Сохраняем DataFrame обратно в Excel
+                self.context.df_cis.to_excel(filepath, index=False)
+                print(f"✅ Данные успешно сохранены в {filepath}")
+            except Exception as e:
+                print(f"❌ Ошибка при сохранении файла: {e}")
+        else:
+            print("⚠️ Нет данных для сохранения Справочника кодов маркировки")
+
     def set_active_and_show(self, screen_func, index):
         self.set_active(index)
         screen_func()
@@ -140,8 +158,23 @@ class AppUI:
         self.active_index = index
 
     def _clear_content(self):
+        """
+        Уничтожает текущий активный виджет, гарантируя отмену всех
+        запланированных после-вызовов (after-колбэков).
+        """
         if self.current_frame:
-            self.current_frame.pack_forget()
+            try:
+                # 1. Вызываем destroy().
+                # Если форма (FBSModeOzon/WB) имеет наш кастомный метод destroy(),
+                # он отменит все self.after() таймеры.
+                self.current_frame.destroy()
+            except Exception:
+                # На случай, если что-то пошло не так при уничтожении,
+                # просто игнорируем, чтобы избежать краша в app_ui.py.
+                pass
+            finally:
+                # 2. Обнуляем ссылку, чтобы не обращаться к удаленному объекту
+                self.current_frame = None
 
     def show_database(self):
         self._clear_content()
@@ -226,6 +259,7 @@ class AppUI:
             elif answer == None:
                 return
 
+        self.save_df_to_excel_cis()
         self.save_config()
         self.context.save_to_file(CONTEXT_FILE)
         self.root.destroy()

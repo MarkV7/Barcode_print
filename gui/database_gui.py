@@ -89,7 +89,7 @@ class DatabaseMode(ctk.CTkFrame):
             return
         
         try:
-            if not self.data_loaded:
+            if not self.data_loaded or True:
                 self.df = pd.read_excel(file_path, engine="openpyxl").convert_dtypes()
                 self.file_path = file_path
                 self.path_entry.delete(0, "end")

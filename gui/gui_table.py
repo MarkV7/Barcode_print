@@ -247,10 +247,16 @@ class EditableDataTable(ctk.CTkFrame):
             self.tree.heading(col, text=col)
             if col=="Количество": self.tree.column(col, anchor="w", width=50)
             elif col == "Размер": self.tree.column(col, anchor="w", width=50)
+            elif col == "Цена":
+                self.tree.column(col, anchor="w", width=100)
             elif col == "Служба доставки":
                 self.tree.column(col, anchor="w", width=150)
             elif col == "Статус обработки":
                 self.tree.column(col, anchor="w", width=150)
+            elif col == "Наименование":
+                self.tree.column(col, anchor="w", width=450)
+            elif col == "Код маркировки":
+                self.tree.column(col, anchor="w", width=300)
             else:
                 self.tree.column(col, anchor="w", width=200)
 
@@ -349,7 +355,16 @@ class EditableDataTable(ctk.CTkFrame):
         for idx, row in self.displayed_df.iterrows():
             str_values = []
             for val in row:
-                if pd.isna(val):
+                # 1. Сначала проверяем, является ли значение списком (для колонки "Код маркировки")
+                if isinstance(val, list):
+                    # Преобразуем список в строку для отображения
+                    # Например: "['01...','21...']" или просто "2 шт." или перечисление через запятую
+                    if not val:
+                        str_values.append("")  # Пустой список
+                    else:
+                        str_values.append(str(val))  # Или ", ".join(map(str, val))
+                # 2. Затем проверяем на pd.isna (только если это не список)
+                elif pd.isna(val):
                     str_values.append("")
                 elif isinstance(val, float) and val.is_integer():
                     str_values.append(str(int(val)))
