@@ -1,5 +1,7 @@
 import requests
 from typing import Optional, Dict, Any
+from datetime import datetime, timedelta, timezone
+import time
 
 class WildberriesFBSAPI:
     """
@@ -26,7 +28,7 @@ class WildberriesFBSAPI:
         response.raise_for_status()
         return response.json()
 
-    def get_info_about_orders(self, params: Optional[Dict[str, Any]] = None) -> Dict:
+    def get_info_about_orders(self, days_back: int = 10) -> Dict:
         """
         Метод возвращает информацию о сборочных заданиях без их актуального статуса.
         Можно получить данные за заданный период, максимум 30 календарных дней одним запросом.
@@ -34,7 +36,22 @@ class WildberriesFBSAPI:
         Возвращает: dict с данными заказов
         """
         url = f"{self.BASE_URL}/api/v3/orders"
-        response = self.session.get(url, params=params)
+        current_time = int(time.time())
+        # dateTo: Берем текущее время
+        date_to = current_time
+        # dateFrom: Отнимаем дни (days_back * 24 часа * 60 минут * 60 секунд)
+        date_from = current_time - (days_back * 86400)
+        # Основное тело запроса
+        data = {
+            "limit": 100,
+            "next": 0,
+            "dateFrom": date_from,
+            "dateTo": date_to,
+            }
+        response = self.session.get(url, params=data)
+        # Если снова будет ошибка, полезно видеть, что ответил сервер (там бывает описание)
+        if response.status_code == 400:
+            print(f"❌ Ошибка WB API 400: {response.text}")
         response.raise_for_status()
         return response.json()
 
@@ -102,8 +119,11 @@ class WildberriesFBSAPI:
         order_ids: список ID сборочных заданий (orders)
         Возвращает: dict с результатом
         """
-        url = f"{self.BASE_URL}/api/v3/supplies/{supply_id}/orders/{order_id}"
-        response = self.session.patch(url)
+        # url = f"{self.BASE_URL}/api/v3/supplies/{supply_id}/orders/{order_id}"
+        # url = f"{self.BASE_URL}/api/v3/supplies/{supply_id}/orders"
+        url = f'{self.BASE_URL}/api/marketplace/v3/supplies/{supply_id}/orders'
+        data = {"orders": [order_id]}
+        response = self.session.patch(url, json=data)
         response.raise_for_status()
         return response
 

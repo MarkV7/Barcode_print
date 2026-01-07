@@ -23,6 +23,49 @@ class AppContext:
         self.ozon_client_id: str = ''
         self.ozon_api_key: str = ''
 
+    def save_df_to_parquet(self, filename: str = "data.parquet", subdir: str = "Data"):
+        """
+        Сохраняет датафрейм из self.context.df_cis в формат .parquet
+        по указанному пути: subdir/filename
+        """
+        # Путь к файлу
+        filepath = os.path.join(subdir, filename)
+
+        # Создаём директорию, если её нет
+        os.makedirs(subdir, exist_ok=True)
+
+        # Проверяем, что датафрейм существует
+        if self.df_cis is not None:
+            try:
+                # Сохраняем в формате Parquet
+                self.df_cis.to_parquet(filepath, index=False, engine='pyarrow')
+                print(f"✅ Данные успешно сохранены в {filepath}")
+            except Exception as e:
+                print(f"❌ Ошибка при сохранении в Parquet: {e}")
+        else:
+            print("⚠️ Нет данных для сохранения в Parquet")
+
+    def load_df_from_parquet(self, filename: str = "data.parquet", subdir: str = "Data"):
+        """
+        Загружает датафрейм из файла .parquet и сохраняет в self.context.df_cis
+        по пути: subdir/filename
+        """
+        filepath = os.path.join(subdir, filename)
+
+        if os.path.exists(filepath):
+            try:
+                # Загружаем датафрейм из Parquet
+                df = pd.read_parquet(filepath, engine='pyarrow')
+                self.df_cis = df
+                print(f"✅ Данные успешно загружены из {filepath}")
+                return df
+            except Exception as e:
+                print(f"❌ Ошибка при загрузке из Parquet: {e}")
+                return None
+        else:
+            print(f"⚠️ Файл {filepath} не найден")
+            return None
+
     def save_to_file(self, filepath: str):
         """
         Сохраняет контекст приложения в файл.
@@ -50,10 +93,12 @@ class AppContext:
             with open(filepath, "wb") as f:
                 pickle.dump(data, f)
             print(f"✅ Контекст успешно сохранён в {filepath} (формат: pickle)")
+            # self.save_df_to_parquet()
         elif filepath.endswith(".json"):
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False)
             print(f"✅ Контекст успешно сохранён в {filepath} (формат: json)")
+            # self.save_df_to_parquet()
         else:
             raise ValueError("Неподдерживаемый формат файла. Используйте .pkl или .json")
 

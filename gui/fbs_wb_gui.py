@@ -17,33 +17,33 @@ from printer_handler import LabelPrinter
 import logging
 
 # -----------------------------------------------------------
-# НАСТРОЙКА ЛОГИРОВАНИЯ
+# НАСТРОЙКА ЛОГИРОВАНИЯ (ПО АНАЛОГИИ С OZON)
 # -----------------------------------------------------------
 log_file_name = "app.log"
-# Задаем базовую конфигурацию:
-# - log_file_name: Имя файла лога
-# - level: Уровень логирования (INFO - это информационные сообщения и выше: WARNING, ERROR, CRITICAL)
-# - format: Формат сообщения: Время - Уровень - Имя модуля - Сообщение
+
+# 1. Получаем корневой логгер
+root_logger = logging.getLogger()
+
+# 2. Удаляем ВСЕ существующие обработчики (решает проблему дублей и конфликтов)
+if root_logger.hasHandlers():
+    root_logger.handlers.clear()
+
+# 3. Настраиваем конфигурацию с нуля
 logging.basicConfig(
-    filename=log_file_name,
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
-    encoding='utf-8' # Важно для корректной работы с кириллицей
+    handlers=[
+        logging.FileHandler(log_file_name, encoding='utf-8'), # Запись в файл с поддержкой кириллицы
+        logging.StreamHandler()                               # Вывод в консоль
+    ]
 )
 
-# 1. Скрываем шумные логи от библиотек обработки изображений
+# 4. Скрываем шумные логи от библиотек
 logging.getLogger('PIL').setLevel(logging.WARNING)
 logging.getLogger('Image').setLevel(logging.WARNING)
 logging.getLogger('fitz').setLevel(logging.WARNING)
-
-# 2. Скрываем шумные логи от HTTP-запросов (Wildberries API)
 logging.getLogger('urllib3').setLevel(logging.WARNING)
 logging.getLogger('requests').setLevel(logging.WARNING)
-
-# Добавляем логгер, который также выводит сообщения в консоль (если нужно видеть их и там)
-logging.getLogger().addHandler(logging.StreamHandler())
-
-# -----------------------------------------------------------
 
 # Переменная для хранения имени файла с новыми ШК
 NEW_BARCODES_FILE = "new_barcodes.csv"
@@ -239,13 +239,20 @@ class FBSModeWB(ctk.CTkFrame):
         control_panel.grid_columnconfigure(0, weight=1)
 
         row = 0
-        ctk.CTkButton(control_panel, text="Загрузить заказы из Excel",
-                      command=self.load_orders, font=self.font,
-                      # fg_color="blue",
+        # ctk.CTkButton(control_panel, text="Загрузить заказы из Excel",
+        #               command=self.load_orders, font=self.font,
+        #               # fg_color="blue",
+        #               state="normal").grid(row=row, column=0, padx=10, pady=(10, 5), sticky="ew")
+        # row += 1
+        # 1. Кнопка "Загрузить товары" (Требование 5 - смещено вверх)
+        ctk.CTkButton(control_panel, text="Загрузить NEW заказы из WB",
+                      command=lambda: self.load_wb_orders_add(new_flag=True),
+                      font=self.font,
+                      fg_color="blue",
                       state="normal").grid(row=row, column=0, padx=10, pady=(10, 5), sticky="ew")
         row += 1
-        # 1. Кнопка "Загрузить товары" (Требование 5 - смещено вверх)
-        ctk.CTkButton(control_panel, text="Загрузить заказы из WB", command=self.load_wb_orders, font=self.font,
+        # 1. Кнопка "Подгрузить заказы из WB"
+        ctk.CTkButton(control_panel, text="Подгрузить заказы из WB", command=self.load_wb_orders_add, font=self.font,
                       fg_color="blue", state="normal").grid(row=row, column=0, padx=10, pady=(10, 5), sticky="ew")
         row += 1
         ctk.CTkButton(control_panel, text="Обновить статусы заказа", command=self.update_orders_statuses_from_api, font=self.font,
@@ -281,6 +288,14 @@ class FBSModeWB(ctk.CTkFrame):
         self.cis_entry.grid(row=row, column=0, padx=10, pady=(0, 10), sticky="ew")
         row += 1
 
+        # 8. Кнопка "Очистить КИЗ"
+        self.transfer_button = ctk.CTkButton(control_panel, text="Очистить КИЗ",
+                                             command=self.clear_cis_button,
+                                             font=self.font,
+                                             fg_color="gray",
+                                             state="normal")
+        self.transfer_button.grid(row=row, column=0, padx=10, pady=10, sticky="ew")
+        row += 1
         # 4. Кнопка "Добавить к поставке"
         self.assembly_button = ctk.CTkButton(control_panel, text="Добавить к поставке",
                                              command=self.finalize_manual_assembly, font=self.font, fg_color="green",
@@ -362,6 +377,64 @@ class FBSModeWB(ctk.CTkFrame):
         self.update_table()
         self.update_supply_combobox()
         self.start_auto_focus()
+
+    def is_valid_chestny_znak(self, code: str) -> bool:
+        # Убираем спецсимволы разделители (FNC1 / GS / \x1d), если сканер их передает
+        clean_code = code.replace('\x1d', '').strip()
+
+        # Шаблон для полного кода (с криптохвостом)
+        # GTIN(14) + Serial(13-20) + (опционально 91(4) + 92(44/88))
+        # Обратите внимание: длина серийного номера бывает разной для разных товарных групп
+        # (обувь, одежда - 13, шины - 20, табак - 7 и т.д.), поэтому ставим {1,20}
+        pattern = r"^01(\d{14})21([\x21-\x7A]{1,20})(91[\x21-\x7A]{4}92[\x21-\x7A]{44,88})?$"
+
+        return bool(re.match(pattern, clean_code))
+
+    def is_valid_barcode(self, barcode: str) -> bool:
+        """
+        Проверяет, является ли строка валидным штрихкодом товара.
+
+        Поддерживаемые форматы:
+        - EAN-13: 13 цифр
+        - EAN-8: 8 цифр (опционально)
+        - UPC-A: 12 цифр (можно включить при необходимости)
+
+        По умолчанию — только EAN-13 (наиболее распространён в РФ).
+        """
+
+        if not isinstance(barcode, str):
+            return False
+        # Убираем возможные пробелы или дефисы (иногда встречаются)
+        barcode = barcode.strip().replace("-", "").replace(" ", "")
+
+        # Проверка длины и цифр
+        if not re.fullmatch(r"^\d{13}$", barcode):
+            return False
+
+        # Опционально: проверка контрольной суммы для EAN-13
+        return self.is_valid_ean13_checksum(barcode)
+
+    def is_valid_ean13_checksum(self,barcode: str) -> bool:
+        """
+        Проверяет контрольную сумму EAN-13.
+        Алгоритм:
+        - Сумма цифр на чётных позициях (2,4,6...) * 3
+        - Плюс сумма цифр на нечётных позициях (1,3,5...)
+        - Последняя цифра — контрольная
+        - Общая сумма должна быть кратна 10
+        """
+        if len(barcode) != 13 or not barcode.isdigit():
+            return False
+
+        digits = [int(d) for d in barcode]
+        # Позиции: 0-based, но в EAN-13 нумерация с 1 → чётные индексы = нечётные позиции
+        # Считаем: позиции 1,3,5,7,9,11 → индексы 0,2,4,6,8,10 → НЕЧЁТНЫЕ индексы в 0-based считаются как "чётные позиции"
+        # Правильный алгоритм:
+        sum_odd = sum(digits[i] for i in range(0, 12, 2))  # позиции 1,3,5,...,11 → индексы 0,2,...,10
+        sum_even = sum(digits[i] for i in range(1, 12, 2))  # позиции 2,4,...,12 → индексы 1,3,...,11
+        total = sum_odd + 3 * sum_even
+        check_digit = (10 - (total % 10)) % 10
+        return check_digit == digits[12]
 
     def load_orders(self):
         """Загружает заказы из Excel"""
@@ -667,6 +740,57 @@ class FBSModeWB(ctk.CTkFrame):
                     f"❌ Ошибка API WB привязки кода маркировки, 'Статус заказа' не переведен в 'confirm'",
                     is_error=True)
 
+    def assign_product_label_internal_directory(self, marking_code, row=None):
+        if not marking_code:
+            if row is None:
+                if self.selected_row_index is None:
+                    self.show_log("❌ Выберите активную строку для привязки маркировки Честный знак.", is_error=True)
+                    return
+                row = self.fbs_df.loc[self.selected_row_index]
+                self.show_log(f"Активная строка не была задана, используем активный индекс, в заказе {row['Номер заказа']} ")
+                marking_code = self.fbs_df.at[self.selected_row_index, "Код маркировки"]
+            else:
+                marking_code = row["Код маркировки"]
+                self.show_log(
+                    f"Для определения кода маркировки, использовалась переданная строка, в заказе {row['Номер заказа']} ")
+            # marking_code = self._normalize_cis_to_list(marking_code)
+        if marking_code:
+            try:
+                # Создаем новую запись
+                new_row = pd.DataFrame([{
+                    "Номер отправления": row["Номер заказа"],
+                    "Код маркировки": marking_code,
+                    "Цена": row["Цена"],
+                    "sku": row["Штрихкод WB"],
+                    "Артикул поставщика": row["Артикул поставщика"],
+                    "Размер": row["Размер"],
+                    "Время добавления": pd.Timestamp.now()
+                }]).explode("Код маркировки", ignore_index=True)
+            # ---------------------- block for self.app_context.df_cis -------------
+                if self.app_context.df_cis is None:
+                    self.app_context.df_cis = new_row.copy()
+                else:
+                    # Убедимся, что столбец существует с правильным типом, временная проверка
+                    if "Время добавления" not in self.app_context.df_cis.columns:
+                        self.app_context.df_cis["Время добавления"] = pd.NaT
+                        self.app_context.df_cis = self.app_context.df_cis.explode("Код маркировки", ignore_index=True)
+
+                    existing_codes = set(self.app_context.df_cis["Код маркировки"].dropna().astype(str))
+                    new_row_clean = new_row[~new_row["Код маркировки"].astype(str).isin(existing_codes)]
+                    if not new_row_clean.empty:
+                        self.app_context.df_cis = pd.concat([self.app_context.df_cis, new_row_clean], ignore_index=True)
+                self.show_log(
+                            f"Информация КИЗ записаны {marking_code} в Основной справочник КИЗ{row['Номер заказа']} и товара {row['Штрихкод WB']}.")
+            # ---------------------- block for self.cis_df -------------
+            except Exception as e:
+                self.show_log(
+                    f"❌ Ошибка записи КИЗ {marking_code} в Основной справочник КИЗ{row['Номер заказа']} и товара {row['Штрихкод WB']}: {str(e)}",
+                    is_error=True)
+        else:
+            # предусмотреть удаление строки по sku если есть запись
+            self.show_log(
+                f"КИЗ не  смог получить данные для записи в Основной справочник КИЗ {row['Номер заказа']} и товара {row['Штрихкод WB']}.")
+
     def handle_marking_input(self, marking_code):
         """Обрабатывает ввод кода маркировки, для поля автосборки"""
         label_printer = LabelPrinter(self.app_context.printer_name)
@@ -676,12 +800,12 @@ class FBSModeWB(ctk.CTkFrame):
             # Записываем код маркировки в таблицу, если значение не пусто
             if marking_code:
                 # Проверяй корректность введенного кода
-                if not label_printer.is_correct_gs1_format(marking_code):
+                if not self.is_valid_chestny_znak(marking_code):
                     play_unsuccess_scan_sound()
-                    self.show_log("❌ Неверный формат кода маркировки", bg_color="#FFE0E0", text_color="red")
-                    # self.input_mode = "marking"
+                    self.show_log("❌ Неверный формат кода маркировки", is_error=True)
+                    self.input_mode = "marking"
                     # self.scan_entry.delete(0, "end")
-                    # self.restore_entry_focus()
+                    self.restore_entry_focus()
                     return
 
                 self.fbs_df.at[self.selected_row_index, "Код маркировки"] = marking_code
@@ -692,6 +816,8 @@ class FBSModeWB(ctk.CTkFrame):
             self.finalize_manual_assembly()
             # Привяжем код маркировки к метаданным заказа WB
             self.assign_product_label(row, marking_code)
+            # Занесем код маркировки в Справочник КИЗ
+            self.assign_product_label_internal_directory(marking_code,row)
 
             if self.check_var.get() == 'on':
                 self.show_log(f"Печатаем этикетку {self.pending_barcode} ШК  ")
@@ -734,51 +860,85 @@ class FBSModeWB(ctk.CTkFrame):
             self.start_auto_focus()
             return
 
-        # ВРЕМЕННАЯ ЛОГИКА: Просто сохраняем КИЗ в строке
+        # Проверяй корректность введенного кода
+        if not self.is_valid_chestny_znak(cis_code):
+            play_unsuccess_scan_sound()
+            self.show_log("❌ Неверный формат кода маркировки", is_error=True)
+            # self.scan_entry.delete(0, "end")
+            self.cis_entry_focus()
+            return
 
         row = self.fbs_df.loc[self.selected_row_index]
         self.fbs_df.loc[self.selected_row_index, 'Код маркировки'] = cis_code
         self.show_log(f"✅ КИЗ ({cis_code[:10]}...) записан для заказа {row['Номер заказа']}.", is_error=False)
+
+        # Привяжем код маркировки к метаданным заказа WB
+        self.assign_product_label(row, cis_code)
+        # Занесем код маркировки в Справочник КИЗ
+        self.assign_product_label_internal_directory(cis_code, row)
+
         self.update_table()
         self.start_auto_focus()
 
-    def handle_unmatched_barcode(self, barcode: str):
-        """
-        Обрабатывает штрихкод, который не соответствует ни одному текущему заказу.
-        Предлагает сохранить его как новый ШК/Артикул. ЭТО НАДО ДОРАБОТАТЬ !!!
-        """
-        # Попытка найти совпадение в базе новых ШК (wb_marking_db)
-        match = self.wb_marking_db[self.wb_marking_db['Штрихкод'] == barcode]
-
-        if not match.empty:
-            self.show_log(f"⚠️ ШК {barcode} найден в базе, но не в текущих заказах. Заказ не найден.", is_error=True)
+    def clear_cis_button(self):
+        if self.selected_row_index is None:
+            self.show_log("❌ Сначала выберите строку или отсканируйте товар.", is_error=True)
             play_unsuccess_scan_sound()
+            self.start_auto_focus()
             return
+        row = self.fbs_df.loc[self.selected_row_index]
 
-        self.show_log(f"❌ ШК/Артикул {barcode} не найден ни в заказах, ни в базе.", is_error=True)
+        # ----- Блок Удаления из таблицы df_cis эти строки -------
+        # 1. Получаем список кодов из fbs_df (одна ячейка, тип — list)
+        codes_to_remove = self.fbs_df.at[self.selected_row_index, 'Код маркировки']
+        # Создаём маску для строк, где 'Код маркировки' равен code_to_remove
+        mask = self.app_context.df_cis['Код маркировки'] == codes_to_remove
+        # Удаляем строки, оставляя только те, где маска False (т.е. не равны значению)
+        self.app_context.df_cis = self.app_context.df_cis[~mask].reset_index(drop=True)
+        # ------ конец блока удаления ------
 
-        # Предлагаем добавить ШК в базу (требование 6)
-        if messagebox.askyesno("Новый Штрихкод/Артикул",
-                               f"ШК/Артикул {barcode} не найден.\nХотите добавить его в базу?"):
+        self.fbs_df.at[self.selected_row_index, 'Код маркировки'] = ''
+        self.show_log(f"✅ КИЗ очищены для отправления {row['Номер отправления']} и товара {row['sku']}.")
+        self.update_table()
+        self.data_table.select_row(self.selected_row_index)
 
-            # --- Добавление ШК/Артикула ---
-            article = eg.enterbox("Введите Артикул Производителя для этого штрихкода:", "Добавление нового ШК")
-            if not article:
-                self.show_log("Отменено. Добавление нового ШК/Артикула пропущено.", is_error=True)
-                return
-
-            new_row = pd.DataFrame([{
-                'Артикул производителя': article,
-                'Штрихкод производителя': barcode,
-                'Баркод Wildberries': '',
-            }])
-
-            # Добавляем в базу и сохраняем
-            self.wb_marking_db = pd.concat([self.wb_marking_db, new_row], ignore_index=True)
-            self._save_new_barcodes()
-            self.show_log(f"✅ Новый ШК/Артикул {article} ({barcode}) добавлен в базу.", is_error=False)
-
-        play_unsuccess_scan_sound()
+    # def handle_unmatched_barcode(self, barcode: str):
+    #     """
+    #     Обрабатывает штрихкод, который не соответствует ни одному текущему заказу.
+    #     Предлагает сохранить его как новый ШК/Артикул. ЭТО НАДО ДОРАБОТАТЬ !!!
+    #     """
+    #     # Попытка найти совпадение в базе новых ШК (wb_marking_db)
+    #     match = self.wb_marking_db[self.wb_marking_db['Штрихкод'] == barcode]
+    #
+    #     if not match.empty:
+    #         self.show_log(f"⚠️ ШК {barcode} найден в базе, но не в текущих заказах. Заказ не найден.", is_error=True)
+    #         play_unsuccess_scan_sound()
+    #         return
+    #
+    #     self.show_log(f"❌ ШК/Артикул {barcode} не найден ни в заказах, ни в базе.", is_error=True)
+    #
+    #     # Предлагаем добавить ШК в базу (требование 6)
+    #     if messagebox.askyesno("Новый Штрихкод/Артикул",
+    #                            f"ШК/Артикул {barcode} не найден.\nХотите добавить его в базу?"):
+    #
+    #         # --- Добавление ШК/Артикула ---
+    #         article = eg.enterbox("Введите Артикул Производителя для этого штрихкода:", "Добавление нового ШК")
+    #         if not article:
+    #             self.show_log("Отменено. Добавление нового ШК/Артикула пропущено.", is_error=True)
+    #             return
+    #
+    #         new_row = pd.DataFrame([{
+    #             'Артикул производителя': article,
+    #             'Штрихкод производителя': barcode,
+    #             'Баркод Wildberries': '',
+    #         }])
+    #
+    #         # Добавляем в базу и сохраняем
+    #         self.wb_marking_db = pd.concat([self.wb_marking_db, new_row], ignore_index=True)
+    #         self._save_new_barcodes()
+    #         self.show_log(f"✅ Новый ШК/Артикул {article} ({barcode}) добавлен в базу.", is_error=False)
+    #
+    #     play_unsuccess_scan_sound()
 
     def save_to_main_database(self, row, barcode):
         """Сохраняет штрихкод в основную базу данных"""
@@ -887,17 +1047,7 @@ class FBSModeWB(ctk.CTkFrame):
     def load_wb_orders(self):
         """Загружает новые сборочные задания WB через API."""
         debug_info = False
-        # Проверяем наличие и содержимое общей базы данных -- df_barcode_WB убираем, потому как все будет храниться в df
-        # if self.df_barcode_WB is None or self.df_barcode_WB.empty:
-        #     try:
-        #         file_path = fd.askopenfilename(filetypes=[("Excel files", "*.xlsx *.xls")])
-        #         self.df_barcode_WB = pd.read_excel(file_path)
-        #         setattr(self.app_context, "df_barcode_WB", self.df_barcode_WB)
-        #         setattr(self.app_context, "file_path2", file_path)
-        #     except Exception as e:
-        #         self.show_log(f"Ошибка при загрузке файла: {str(e)}", is_error=True)
-        # else:
-        #     self.app_context.df = pd.concat([self.app_context.df, self.df_barcode_WB], ignore_index=True)
+
         try:
             self.show_log("WB API: Запрос новых сборочных заданий...")
             orders_data = self.api.get_orders(params={'flag': 0})
@@ -915,7 +1065,7 @@ class FBSModeWB(ctk.CTkFrame):
                 # Создаем ключевые колонки и статусы (сохраняем столбцы, как в self.fbs_df) ВРЕМЕННО ЗАКОММЕНТИРОВА нижние строки
                 new_orders_df['Номер заказа'] = new_orders_df['id'] #.astype(str)
                 new_orders_df['Служба доставки'] = self.marketplace
-                new_orders_df['Цена'] = new_orders_df['finalPrice'].astype(str)
+                new_orders_df['Цена'] = (new_orders_df['convertedPrice'] / 100).astype(str)  # 'finalPrice', 'salePrice', 'convertedFinalPrice'
                 new_orders_df['Артикул поставщика'] = new_orders_df['article'].astype(str)
                 new_orders_df['Размер'] = new_orders_df['chrtId'].astype(str)
                 new_orders_df['Количество'] = 1
@@ -966,6 +1116,134 @@ class FBSModeWB(ctk.CTkFrame):
         except Exception as e:
             self.show_log(f"❌ Ошибка загрузки заказов WB: {e}", is_error=True)
             logging.info(f"❌ Ошибка загрузки заказов WB: {e}")
+            play_unsuccess_scan_sound()
+
+    def load_wb_orders_add(self, new_flag:bool = False):
+        """Загружает новые и в работе сборочные задания WB через API."""
+        debug_info = False
+
+        try:
+            if new_flag:
+                self.show_log("WB API: Запрос новых сборочных заданий...")
+                orders_data = self.api.get_orders(params={'flag': 0})
+                orders = orders_data.get('orders', [])
+            else:
+                self.show_log("WB API: Подгружаем сборочные задания...")
+                orders_data = self.api.get_info_about_orders()
+                orders = orders_data.get('orders', [])
+
+            if not orders:
+                self.show_log("✅ Новых сборочных заданий не найдено.", is_error=False)
+                return
+
+            new_orders_df = pd.DataFrame(orders)
+
+            # Создаем ключевые колонки и статусы (сохраняем столбцы, как в self.fbs_df) ВРЕМЕННО ЗАКОММЕНТИРОВА нижние строки
+            new_orders_df['Номер заказа'] = new_orders_df['id']  # .astype(str)
+            new_orders_df['Служба доставки'] = self.marketplace
+            new_orders_df['Цена'] = (new_orders_df['convertedPrice'] / 100).astype(str)
+            # new_orders_df['Артикул поставщика'] = new_orders_df['article'].astype(str)
+            # new_orders_df['Размер'] = new_orders_df['chrtId'].astype(str)
+            new_orders_df['Количество'] = 1
+            new_orders_df['Статус заказа'] = self.define_status[1] if new_flag else self.define_status[0]
+            new_orders_df['Статус обработки'] = self.assembly_status[0]
+
+            # Здесь вставить статусы и оставить строки только с нужными статусами
+            new_orders_df['Штрихкод WB'] = new_orders_df['skus'].apply(
+                lambda x: x[0] if isinstance(x, list) and len(x) > 0 else ""
+            ).astype(str).str.strip()
+
+            try:
+
+                if self.fbs_df is None or self.fbs_df.empty:
+                    new_orders_df_clean = new_orders_df.copy()
+                else:
+                    # Нам нужно исключить строки, которые УЖЕ есть в базе.
+                    # Сравнивать нужно тоже по ['Номер заказа']
+                    self.show_log(f"Создаем временный комбинированный ключ для существующей базы")
+                    # 1. Создаем временный комбинированный ключ для существующей базы
+                    existing_keys = (self.fbs_df['Номер заказа'].astype(str)).tolist()
+                    # 2. Создаем такой же ключ для новых данных
+                    new_keys = (new_orders_df['Номер заказа'].astype(str))
+                    self.show_log(f"Фильтруем: оставляем только те строки new_orders_df")
+                    # 3. Фильтруем: оставляем только те строки new_orders_df,
+                    # чьих ключей НЕТ в existing_keys
+                    # Ищем дубликаты
+                    is_duplicate = new_keys.isin(existing_keys)
+                    # Если все заказы уже есть
+                    if is_duplicate.all():
+                        self.show_log("WB API: Новых заказов не найдено (все уже есть в таблице).")
+                        return
+                    new_orders_df_clean = new_orders_df[~is_duplicate].copy()
+
+                if not new_orders_df_clean.empty:
+                    if self.app_context.df is not None and not self.app_context.df.empty:
+                        self.show_log("Начинаем МЕРЖ: Получение деталей товара из self.app_context.df.")
+                        self.show_log("2.1. Создаем таблицу для поиска:")
+                        product_details_map = self.app_context.df[[
+                            'Баркод  Wildberries',  # Ключ для соединения
+                            'Артикул производителя',
+                            'Размер',
+                            'Штрихкод производителя',  # Штрихкод производителя/внутренний
+                            'Бренд']].copy()
+                        product_details_map = product_details_map.rename(columns={'Штрихкод производителя': 'Штрихкод'})
+                        product_details_map = product_details_map.rename(
+                            columns={'Артикул производителя': 'Артикул поставщика'})
+                        self.show_log(f"Вспомогательная таблица, в количестве :{len(product_details_map)}, с типами {product_details_map.dtypes}")
+                        product_details_map = product_details_map.dropna(subset=['Штрихкод'])
+                        product_details_map = product_details_map.dropna(subset=['Баркод  Wildberries'])
+                        self.show_log(f"Вспомогательная таблица,после удаления пустых значений, в количестве :{len(product_details_map)}")
+
+                        # 2.3. Приводим ключи к строковому типу
+                        product_details_map['Баркод  Wildberries'] = product_details_map['Баркод  Wildberries'].astype(str).str.strip()
+                        new_orders_df_clean['Штрихкод WB'] = new_orders_df_clean['Штрихкод WB'].astype(str).str.strip()
+                        product_details_map.drop_duplicates(subset=['Баркод  Wildberries'], keep='first',
+                                                            inplace=True)
+                        product_details_map = product_details_map.reset_index(drop=True)
+                        self.show_log(
+                            f"Вспомогательная таблица,после удаления дублежей, в количестве :{len(product_details_map)}")
+                        self.show_log(
+                            f"Установлены типы Штрихкод WB:{new_orders_df_clean['Штрихкод WB'].dtypes}, "
+                            f" тип Баркод  Wildberries: {product_details_map['Баркод  Wildberries'].dtypes}")
+                        self.show_log("2.3. Выполняем LEFT MERGE")
+                        # 2.4. Выполняем LEFT MERGE
+                        new_orders_df_clean = new_orders_df_clean.merge(
+                            product_details_map,
+                            left_on='Штрихкод WB',
+                            right_on='Баркод  Wildberries',
+                            how='left'
+                            , indicator=True)
+                        matched = new_orders_df_clean['_merge'] == 'both'
+                        self.show_log(f"Найдено сопоставлений: {matched.sum()}")
+                    else:
+                        self.show_log(
+                            "Основной справочник товаров (Штрихкод WB) пуст. Нет возможности получить Штрихкод")
+                        return
+
+                    # 5. Объединение с текущей базой (self.fbs_df)
+                    self.show_log("5. Объединение с текущей базой (self.fbs_df)")
+                    # Создаём датафрейм с правильными колонками, заполняя отсутствующие ''
+                    new_orders_df_clean = new_orders_df_clean.reindex(columns=self.fbs_df.columns, fill_value='')
+                    # Используем fillna('') для всего DataFrame или точечно
+                    new_orders_df_clean = new_orders_df_clean.fillna('')
+
+                    if self.fbs_df is None or self.fbs_df.empty:
+                        self.fbs_df = new_orders_df_clean.copy()
+                    else:
+                        self.fbs_df = pd.concat([self.fbs_df, new_orders_df_clean], ignore_index=True)
+                        # self.fbs_df = self.fbs_df.drop_duplicates(subset=['Номер заказа'], keep='last')
+                    # Сохраняем в контекст
+                    self.save_data_to_context()
+                    # Обновляем отображение
+                    self.update_table(self.fbs_df)
+                    self.show_log(f"✅ Загружено {len(new_orders_df_clean)}  сборочных заданий WB.")
+                else:
+                    self.show_log("Все полученные товары уже есть в таблице.")
+            except Exception as e:
+                self.show_log(f"❌ Ошибка при попытке сопоставить строки с внутренней базой: {e}", is_error=True)
+
+        except Exception as e:
+            self.show_log(f"❌ Ошибка загрузки заказов WB: {e}", is_error=True)
             play_unsuccess_scan_sound()
 
     def create_new_supply(self):
@@ -1370,7 +1648,6 @@ class FBSModeWB(ctk.CTkFrame):
         try:
             self.app_context.fbs_table = self.fbs_df.copy()
             wb_supply_id = self.wb_supply_id_var.get().strip()
-            logging.info(f"[DEBUG] save_data_to_context: сохраняю wb_fbs_supply_id = '{wb_supply_id}'")
             self.show_log(f"Сохраняю id поставки WB: {wb_supply_id}")
             self.app_context.wb_fbs_supply_id = wb_supply_id
         except Exception as e:
@@ -1466,11 +1743,9 @@ class FBSModeWB(ctk.CTkFrame):
                     self.fbs_df['Статус заказа'] = self.fbs_df.apply(map_new_status, axis=1)
                     self.update_table()
 
-                self.show_log("✅ Статусы заказов успешно обновлены из WB API.", is_error=False)
-                if debug_info: logging.info("✅ Статусы заказов успешно обновлены из WB API.")
+                self.show_log("✅ Статусы заказов успешно обновлены из WB API.")
             else:
                 self.show_log("WB API не вернул статусы заказов в ожидаемом формате.", is_error=True)
-                if debug_info: logging.info("WB API не вернул статусы заказов в ожидаемом формате.")
 
         # except requests.exceptions.HTTPError as e:
         #     self.show_log(f"❌ Ошибка API при получении статусов: {e}", is_error=True)
@@ -1520,6 +1795,21 @@ class FBSModeWB(ctk.CTkFrame):
                 self.after_cancel(self.focus_timer_id)
 
             self.focus_timer_id = self.after(100, self.scan_entry2.focus_set)
+
+    def cis_entry_focus(self):
+        """Устанавливает фокус на поле сканирования КИЗ."""
+        # Используем общую логику восстановления фокуса
+        if self.cis_entry and self.cis_entry.winfo_exists():
+            # Если нужно именно на cis_entry
+            if hasattr(self, 'focus_timer_id') and self.focus_timer_id:
+                try:
+                    self.after_cancel(self.focus_timer_id)
+                except Exception:
+                    pass
+            self.focus_timer_id = self.after(100,
+                                             lambda: self.cis_entry.focus_set() if self.cis_entry.winfo_exists() else None)
+        else:
+            self.restore_entry_focus()
 
     def get_row_status(self, row):
         """Определяет статус строки для цветовой индикации"""

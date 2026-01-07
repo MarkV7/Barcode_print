@@ -15,7 +15,7 @@ from gui.gui_table import EditableDataTable
 from printer_handler import LabelPrinter
 import logging
 import ast
-from test_generate import generate_honest_sign_code as ghsc
+# from test_generate import generate_honest_sign_code as ghsc
 
 # -----------------------------------------------------------
 # НАСТРОЙКА ЛОГИРОВАНИЯ
@@ -99,6 +99,7 @@ class FBSModeOzon(ctk.CTkFrame):
         # --- Данные ---
         # 1. Создаем целевой DF с необходимыми колонками, инициализированный пустыми строками
         self.fbs_df = pd.DataFrame(columns=self.columns)
+        self.cis_df = pd.DataFrame(columns=("Номер отправления","Код маркировки","Цена","sku","Артикул поставщика","Размер","Время добавления"))
         if self.marketplace == 'Ozon':
             if hasattr(self.app_context, "fbs_table_ozon") and self.app_context.fbs_table_ozon is not None:
                 df = self.app_context.fbs_table_ozon.copy()
@@ -157,6 +158,7 @@ class FBSModeOzon(ctk.CTkFrame):
         self.assembly_button = None
         self.print_button = None
         self.transfer_button = None
+        self.transfer_button2 = None
         self.supply_combobox = None
         self.selected_row_index = None  # Для хранения выбранной строки
         self.table_label = None
@@ -216,7 +218,8 @@ class FBSModeOzon(ctk.CTkFrame):
         main_frame.grid_rowconfigure(mrow, weight=0)
         self.scan_entry = ctk.CTkEntry(main_frame, width=300, font=self.font)
         self.scan_entry.grid(row=mrow, column=0, padx=0, pady=(0, 0))
-        self.scan_entry.bind('<Return>', lambda event: self.handle_barcode_input_auto(self.scan_entry.get()))
+        self.scan_entry.bind('<Return>',
+                             lambda event: self.handle_barcode_input_auto(self.scan_entry.get()))  # if self.input_mode == "barcode" else ghsc()
         self.scan_entry.bind("<KeyRelease>", self.reset_clear_timer)
         self.scan_entry.bind("<FocusIn>", self.on_entry_focus_in)
         self.scan_entry.bind("<FocusOut>", self.on_entry_focus_out)
@@ -283,17 +286,34 @@ class FBSModeOzon(ctk.CTkFrame):
                                                                                         pady=(10, 0), sticky="w")
         row += 1
         self.cis_entry = ctk.CTkEntry(control_panel, font=self.font)
-        self.cis_entry.bind('<Return>', lambda event: self.handle_cis_input(self.cis_entry.get())) # ghsc()
+        self.cis_entry.bind('<Return>', lambda event: self.handle_cis_input(self.cis_entry.get())) #ghsc()   #
         self.cis_entry.grid(row=row, column=0, padx=10, pady=(0, 10), sticky="ew")
         row += 1
 
         # 8. Кнопка "Очистить КИЗ"
         self.transfer_button = ctk.CTkButton(control_panel, text="Очистить КИЗ",
-                                             command=self.clear_cis_button, font=self.font,
+                                             command=self.clear_cis_button,
+                                             font=self.font,
                                              fg_color="gray",
                                              state="normal")
         self.transfer_button.grid(row=row, column=0, padx=10, pady=10, sticky="ew")
         row += 1
+        # # Кнопка "Тестирование"
+        # self.transfer_button2 = ctk.CTkButton(control_panel, text="Тестирование",
+        #                                      command=self.test_auto_handle,
+        #                                      font=self.font,
+        #                                      fg_color="gray",
+        #                                      state="normal")
+        # self.transfer_button2.grid(row=row, column=0, padx=10, pady=10, sticky="ew")
+        # row += 1
+        # Кнопка "Сохранить текущую базу кодов маркировки"
+        # self.transfer_button2 = ctk.CTkButton(control_panel, text="Сохранить базу КИЗ",
+        #                                      command=self.save_df_to_parquet,
+        #                                      font=self.font,
+        #                                      fg_color="gray",
+        #                                      state="normal")
+        # self.transfer_button2.grid(row=row, column=0, padx=10, pady=10, sticky="ew")
+        # row += 1
         # --- Разделитель ---
         ctk.CTkFrame(control_panel, height=2, fg_color="gray").grid(row=row, column=0, padx=10, pady=10,
                                                                     sticky="ew")
@@ -352,6 +372,58 @@ class FBSModeOzon(ctk.CTkFrame):
         self.update_table()
         # self.update_supply_combobox()
         self.start_auto_focus()
+
+    def save_df_to_parquet(self, filename: str = "data_OZON.parquet", subdir: str = "Parquet"):
+        """
+        Сохраняет датафрейм из self.context.df_cis в формат .parquet
+        по указанному пути: subdir/filename
+        """
+        df_cis = self.cis_df
+        # Получаем текущую дату и время в формате YYYYMMDD_HHMM
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+
+        # Разбиваем имя файла и расширение
+        name, ext = os.path.splitext(filename)
+        # Формируем новое имя файла
+        filename_with_timestamp = f"{name}_{timestamp}{ext}"
+        # Путь к файлу
+        filepath = os.path.join('Data',subdir, filename_with_timestamp)
+
+        # Создаём директорию, если её нет
+        os.makedirs(subdir, exist_ok=True)
+
+        # Проверяем, что датафрейм существует
+        if df_cis is not None:
+            try:
+                # Сохраняем в формате Parquet
+                df_cis.to_parquet(filepath, index=False, engine='pyarrow')
+                self.show_log(f"✅ Данные успешно сохранены в {filepath}")
+            except Exception as e:
+                self.show_log(f"❌ Ошибка при сохранении в Parquet: {e}")
+        else:
+            self.show_log("⚠️ Нет данных для сохранения в Parquet")
+
+    def load_df_from_parquet(self, filename: str = "data.parquet", subdir: str = "Data"):
+        """
+        Загружает датафрейм из файла .parquet и сохраняет в self.context.df_cis
+        по пути: subdir/filename
+        """
+        filepath = os.path.join(subdir, filename)
+
+        if os.path.exists(filepath):
+            try:
+                # Загружаем датафрейм из Parquet
+                df = pd.read_parquet(filepath, engine='pyarrow')
+                # self.df_cis = df
+                self.show_log(f"✅ Данные успешно загружены из {filepath}")
+                return df
+            except Exception as e:
+                self.show_log(f"❌ Ошибка при загрузке из Parquet: {e}")
+                return None
+        else:
+            self.show_log(f"⚠️ Файл {filepath} не найден")
+            return None
+
 
     def _normalize_cis_to_list(self, raw_value) -> list:
         """
@@ -537,7 +609,6 @@ class FBSModeOzon(ctk.CTkFrame):
             play_success_scan_sound()
             if self.check_var.get() == 'on':
                 self.show_log(f"Печатаем этикетку {self.current_barcode} ШК  ")
-                logging.info(f'Печатаем этикетку {self.current_barcode} ШК  ')
                 self.print_label_from_button()
         # 2. Несовпадение: возможно, это новый ШК или артикул для добавления
         else:
@@ -548,6 +619,13 @@ class FBSModeOzon(ctk.CTkFrame):
         # self._select_row_by_index(row_index)
         # self.editing = True
         # self.start_auto_focus()
+
+    def test_auto_handle(self):
+        list_barcode = list(zip(self.fbs_df["Количество"], self.fbs_df["Штрихкод"]))
+        for item in list_barcode:
+            self.handle_barcode_input_auto(item[1])
+            for _ in range(item[0]):
+                self.handle_barcode_input_auto(ghsc())
 
     def handle_barcode_input_auto(self, input_value: str):
         """
@@ -564,6 +642,7 @@ class FBSModeOzon(ctk.CTkFrame):
 
     def handle_barcode_input_old(self, barcode):
         """ Обрабатывает ввод штрихкода, для поля автосборки """
+        self.show_log("Сканируем штрихкод товара")
         if self.selected_row_index is not None:
             # Извлекаем значение из DataFrame
             barcode_value = self.fbs_df.at[self.selected_row_index, "Штрихкод"]
@@ -607,9 +686,7 @@ class FBSModeOzon(ctk.CTkFrame):
             matches = self.fbs_df[(self.fbs_df['Штрихкод'].astype(str) == str(barcode))
                                   & (self.fbs_df["Статус обработки"] == self.assembly_status[0])
                                   ]
-
             row_index = 0
-
             if not matches.empty:
                 # --- Логика Сборки по сканированию (автоматическая) ---
                 row_index = matches.index[0]
@@ -676,16 +753,20 @@ class FBSModeOzon(ctk.CTkFrame):
                     f"❌ Ошибка API OZON  привязки отправления, 'Статус заказа' не  в 'awaiting_packaging'",
                     is_error=True)
 
-    def assign_product_label_internal_directory(self, row=None):
-        if row is None:
-            if self.selected_row_index is None:
-                self.show_log("❌ Выберите активную строку для привязки маркировки Честный знак.", is_error=True)
-                return
-            row = self.fbs_df.loc[self.selected_row_index]
-            marking_code = self.fbs_df.at[self.selected_row_index, "Код маркировки"]
-        else:
-            marking_code = row["Код маркировки"]
-        marking_code = self._normalize_cis_to_list(marking_code)
+    def assign_product_label_internal_directory(self, marking_code, row=None):
+        if not marking_code:
+            if row is None:
+                if self.selected_row_index is None:
+                    self.show_log("❌ Выберите активную строку для привязки маркировки Честный знак.", is_error=True)
+                    return
+                row = self.fbs_df.loc[self.selected_row_index]
+                self.show_log(f"Активная строка не была задана, используем активный индекс, в отправлении {row['Номер отправления']} ")
+                marking_code = self.fbs_df.at[self.selected_row_index, "Код маркировки"]
+            else:
+                marking_code = row["Код маркировки"]
+                self.show_log(
+                    f"Для определения кода маркировки, использовалась переданная строка, в отправлении {row['Номер отправления']} ")
+            marking_code = self._normalize_cis_to_list(marking_code)
         if marking_code:
             try:
                 # Создаем новую запись
@@ -698,6 +779,7 @@ class FBSModeOzon(ctk.CTkFrame):
                     "Размер": row["Размер"],
                     "Время добавления": pd.Timestamp.now()
                 }]).explode("Код маркировки", ignore_index=True)
+            # ---------------------- block for self.app_context.df_cis -------------
                 if self.app_context.df_cis is None:
                     self.app_context.df_cis = new_row.copy()
                 else:
@@ -711,19 +793,20 @@ class FBSModeOzon(ctk.CTkFrame):
                     if not new_row_clean.empty:
                         self.app_context.df_cis = pd.concat([self.app_context.df_cis, new_row_clean], ignore_index=True)
                 self.show_log(
-                            f"Информация КИЗ записаны {marking_code} во внутренний справочник {row['Номер отправления']} и товара {row['sku']}.")
+                            f"Информация КИЗ записаны {marking_code} в Основной справочник КИЗ {row['Номер отправления']} и товара {row['sku']}.")
             except Exception as e:
                 self.show_log(
-                    f"❌ Ошибка записи КИЗ {marking_code} во внутренний справочник {row['Номер отправления']} и товара {row['sku']}: {str(e)}",
+                    f"❌ Ошибка записи КИЗ {marking_code} в Основной справочник КИЗ {row['Номер отправления']} и товара {row['sku']}: {str(e)}",
                     is_error=True)
         else:
             # предусмотреть удаление строки по sku если есть запись
-            pass
+            self.show_log(
+                f"КИЗ не  смог получить данные для записи в Основной справочник КИЗ {row['Номер отправления']} и товара {row['sku']}.")
 
     def handle_marking_input(self, marking_code: str):
         """Обрабатывает ввод кода маркировки, для поля автосборки"""
         flag_debug = True
-        # marking_code = input_value.strip()
+        self.show_log("Сканируем код маркировки")
         self.cis_entry.delete(0, 'end')
         if self.selected_row_index is not None:
             row = self.fbs_df.loc[self.selected_row_index]
@@ -751,33 +834,36 @@ class FBSModeOzon(ctk.CTkFrame):
                 if len_cis < quantity:
                     self.fbs_df.loc[self.selected_row_index, 'Код маркировки'].append(marking_code)
                     self.show_log(f"✅ КИЗ записаны для отправления {row['Номер отправления']} и товара {row['sku']}.")
-                    # self.update_table()
+                    self.update_table()
                     # # Сохраняем в контекст
-                    # self.save_data_to_context()
+                    self.save_data_to_context()
                     len_cis += 1
                     # if len_cis == quantity:
                     # Привяжем список код маркировки к метаданным заказа Озон
-                    self.assign_product_label_internal_directory(row)
+                    self.assign_product_label_internal_directory(marking_code,row)
+                    if len_cis < quantity:
+                        self.show_log(
+                            f"Необходимо заполнить еще {quantity - len_cis} КИЗ для отправления {row['Номер отправления']} и товара {row['sku']}.")
+                        self.input_mode = "marking"
+                        # Сохраняем данные в контекст
+                        # self.save_data_to_context()
+                        # # Обновляем таблицу
+                        # self.update_table()
+                        # self.scan_entry.delete(0, "end")
+                        self.restore_entry_focus()
+                        return
                 else:
                     self.show_log(
                         f"✅ Список КИЗ УЖЕ ЗАПОЛНЕН !!! для отправления {row['Номер отправления']} и товара {row['sku']}.")
-                if len_cis < quantity:
-                    self.show_log(
-                        f"Необходимо заполнить еще {quantity - len_cis} КИЗ для отправления {row['Номер отправления']} и товара {row['sku']}.")
-                    self.input_mode = "marking"
-                    # Сохраняем данные в контекст
-                    self.save_data_to_context()
-                    # Обновляем таблицу
-                    self.update_table()
-                    # self.scan_entry.delete(0, "end")
-                    self.restore_entry_focus()
-                    return
             else:
                 self.show_log(
                     f"Предупреждение! Для отправления {row['Номер отправления']} и товара {row['sku']} не задан КИЗ.")
-            # Печатаем этикетку после добавления отправления в заказ
+            # Расскомментировать после тестирования !!!!
+            # Собираем заказ
+            # self.show_log(f"self.finalize_manual_assembly()")
             self.finalize_manual_assembly()
-
+            # Печатаем этикетку
+            # self.show_log(f"self.print_label_from_button(flag=False)")
             if self.check_var.get() == 'on':
                 self.show_log(f"Печатаем этикетку {self.pending_barcode} ШК  ")
                 self.print_label_from_button(flag=False)
@@ -838,10 +924,6 @@ class FBSModeOzon(ctk.CTkFrame):
         self.fbs_df.at[self.selected_row_index, 'Код маркировки'] = cis_list
         len_cis = len(cis_list)
 
-        # print('quantity:', quantity, 'cis_list:', cis_list)
-        # print('type(quantity):', type(quantity), 'type(cis_list):', type(cis_list))
-        # print('quantity:', quantity, 'len_cis:', len_cis)
-        # print('type(quantity):', type(quantity), 'type(len_cis):', type(len_cis))
         if len_cis < quantity:
             self.fbs_df.loc[self.selected_row_index, 'Код маркировки'].append(cis_code)
             self.show_log(f"✅ КИЗ записаны для отправления {row['Номер отправления']} и товара {row['sku']}.")
@@ -851,7 +933,7 @@ class FBSModeOzon(ctk.CTkFrame):
             len_cis += 1
             # if len_cis == quantity:
             # Привяжем список код маркировки к справочнику
-            self.assign_product_label_internal_directory(row)
+            self.assign_product_label_internal_directory(cis_code,row)
         else:
             self.show_log(f"✅ Список КИЗ УЖЕ ЗАПОЛНЕН !!! для отправления {row['Номер отправления']} и товара {row['sku']}.")
         if len_cis >= quantity:
@@ -868,13 +950,30 @@ class FBSModeOzon(ctk.CTkFrame):
             self.start_auto_focus()
             return
         row = self.fbs_df.loc[self.selected_row_index]
+
+        # ----- Блок Удаления из таблицы df_cis эти строки -------
+        # 1. Получаем список кодов из fbs_df (одна ячейка, тип — list)
+        codes_to_remove = self.fbs_df.at[self.selected_row_index, 'Код маркировки']
+        # Защита: если вдруг не список — приведём к списку
+        if not isinstance(codes_to_remove, list):
+            codes_to_remove = [codes_to_remove] if pd.notna(codes_to_remove) else []
+        # 2. Преобразуем в множество для быстрого поиска (опционально, но эффективно)
+        codes_set = set(codes_to_remove)
+        # 3. Создаём маску: оставляем только те строки, чей код НЕ в списке на удаление
+        mask = ~self.app_context.df_cis['Код маркировки'].isin(codes_set)
+        # mask2 = ~self.cis_df['Код маркировки'].isin(codes_set)
+        # 4. Применяем фильтрацию
+        self.app_context.df_cis = self.app_context.df_cis[mask].reset_index(drop=True)
+        # self.cis_df = self.cis_df[mask].reset_index(drop=True)
+        # ------ конец блока удаления ------
+
         self.fbs_df.at[self.selected_row_index, 'Код маркировки'] = []
         self.show_log(f"✅ КИЗ очищены для отправления {row['Номер отправления']} и товара {row['sku']}.")
         self.update_table()
         self.data_table.select_row(self.selected_row_index)
 
-        # Привяжем список код маркировки к справочнику
-        self.assign_product_label_internal_directory(row)
+        # # Привяжем список код маркировки к справочнику
+        # self.assign_product_label_internal_directory(row)
 
     def save_to_main_database(self, row=None, barcode=None):
         """Сохраняет штрихкод в основную базу данных"""
@@ -1042,7 +1141,7 @@ class FBSModeOzon(ctk.CTkFrame):
             new_orders_df = pd.DataFrame(rows)
 
             if self.fbs_df is None or self.fbs_df.empty:
-                new_orders_df_clean = new_orders_df
+                new_orders_df_clean = new_orders_df.copy()
             else:
                 # Нам нужно исключить строки, которые УЖЕ есть в базе.
                 # Сравнивать нужно тоже по ПАРЕ (Отправление + Артикул).
@@ -1065,46 +1164,6 @@ class FBSModeOzon(ctk.CTkFrame):
                 new_orders_df_clean = new_orders_df[~new_keys.isin(existing_keys)]
 
             if not new_orders_df_clean.empty:
-                # <--- Здесь надо вставить обновление по sku и по штрих-коду озон
-                self.show_log("Предполагаем, что new_orders_df уже загружен и содержит колонку 'sku'")
-                # Предполагаем, что new_orders_df уже загружен и содержит колонку 'sku' (Ozon ID товара)
-                if not df_sku.empty:
-                    self.show_log("Начинаем МЕРЖ 1: Получение Штрихкода Ozon из df_sku.")
-                    # 1.1. Создаем таблицу для поиска:
-                    # 'Штрихкод OZON' - значение, которое мы переименуем
-                    sku_columns = ['Ozon Product ID', 'Штрихкод']
-                    sku_ozon_map = df_sku[sku_columns].drop_duplicates(subset=sku_columns[1]).copy()
-                    self.show_log("Очистка lookup-таблицы (убираем дубликаты по ключу")
-                    # 1.2. Очистка lookup-таблицы (убираем дубликаты по ключу)
-                    sku_ozon_map = sku_ozon_map.dropna(subset=sku_columns)
-                    sku_ozon_map.drop_duplicates(subset=sku_columns[0], keep='first', inplace=True)
-                    self.show_log("Приводим ключи к строковому типу (ВАЖНО для надежности)")
-                    # 1.3. Приводим ключи к строковому типу (ВАЖНО для надежности)
-                    sku_ozon_map[sku_columns[0]] = sku_ozon_map[sku_columns[0]].astype(str).str.strip()
-                    sku_ozon_map = sku_ozon_map.rename(columns={'Штрихкод': 'Штрихкод Ozon'})
-                    # print('sku_ozon_map.columns, до первого merge:', sku_ozon_map.columns.tolist())
-                    new_orders_df_clean['sku'] = new_orders_df_clean['sku'].astype(str).str.strip()
-                    self.show_log("Выполняем LEFT MERGE")
-                    # 1.4. Выполняем LEFT MERGE
-                    new_orders_df_clean = new_orders_df_clean.merge(
-                        sku_ozon_map,
-                        left_on='sku',
-                        right_on=sku_columns[0],  #  соответствует 'Ozon Product ID'
-                        how='left',
-                        indicator=True
-                    )
-                    matched = (new_orders_df_clean['_merge'] == 'both').sum()
-                    self.show_log(f"Успешно сопоставлено SKU: {matched}")
-                    # При желании удалите служебную колонку
-                    new_orders_df_clean = new_orders_df_clean.drop(columns='_merge')
-
-                    # 1.5. Удаляем дублирующую колонку-ключ из df_sku и переименовываем целевую
-                    new_orders_df_clean.drop(columns=[sku_columns[0]], errors='ignore', inplace=True)
-                    # print('new_orders_df_clean.columns, после первого merge:',new_orders_df_clean.columns.tolist())
-                else:
-                    self.show_log("Справочник SKU пуст. Нет возможности из него получить Штрихкод Ozon")
-
-
                 # =================================================================
                 # ШАГ 2: Из self.app_context.df по sku Ozon подтягиваем детали товара
                 # =================================================================
@@ -1123,16 +1182,12 @@ class FBSModeOzon(ctk.CTkFrame):
                             'Бренд',
                             'SKU OZON'
                         ]].copy()
-
+                        product_details_map = product_details_map.dropna(subset=['SKU OZON'])
                         product_details_map = product_details_map.rename(columns={'Штрихкод производителя':'Штрихкод'})
                         product_details_map = product_details_map.rename(columns={'Штрихкод OZON': 'Штрихкод Ozon'})
                         # 2.2. Очистка lookup-таблицы (убираем дубликаты по ключу)
                         self.show_log("2.2. Очистка lookup-таблицы (убираем дубликаты по ключу)")
-                        product_details_map = product_details_map.dropna(subset=['SKU OZON'])
-                        product_details_map = product_details_map[
-                            (product_details_map['SKU OZON'] != 0) &
-                            (product_details_map['SKU OZON'] != '0')
-                            ]
+
                         product_details_map.drop_duplicates(subset=['SKU OZON'], keep='first',
                                                             inplace=True)
                         product_details_map = product_details_map.reset_index(drop=True)
@@ -1157,27 +1212,15 @@ class FBSModeOzon(ctk.CTkFrame):
                         # устанавливаем поле-список для кода маркировки, предполагает множественное значение
                         # в дальнейшем подтянуть заполнение из отдельной таблицы !!!
                         new_orders_df_clean['Код маркировки'] = [[] for _ in range(len(new_orders_df_clean))]
-                        # Добавляем отсутствующие колонки из self.fbs_df, чтобы избежать ошибки при concat
-                        for col in self.fbs_df.columns:
-                            if col not in new_orders_df_clean.columns:
-                                new_orders_df_clean[col] = ''
+                        # Создаём датафрейм с правильными колонками, заполняя отсутствующие ''
+                        new_orders_df_clean = new_orders_df_clean.reindex(columns=self.fbs_df.columns, fill_value='')
+
                 else:
                     self.show_log("Основной справочник товаров (Штрихкод Ozon) пуст. Нет возможности получить Штрихкод")
                     return
-                    # --- КОНЕЦ ИНТЕГРАЦИИ ДАННЫХ ---
 
-                # --- ИСПРАВЛЕНИЕ: Очистка полей Штрихкодов от NaN перед concat ---
-                # Заменяем NaN на пустую строку в критически важных колонках
                 # Используем fillna('') для всего DataFrame или точечно
-                if 'Штрихкод' in new_orders_df_clean.columns:
-                    new_orders_df_clean['Штрихкод'] = new_orders_df_clean['Штрихкод'].fillna('').astype(
-                        str).replace('nan', '')
-                if 'Штрихкод Ozon' in new_orders_df_clean.columns:
-                    new_orders_df_clean['Штрихкод Ozon'] = new_orders_df_clean['Штрихкод Ozon'].fillna('').astype(
-                        str).replace('nan', '')
-                if 'Размер' in new_orders_df_clean.columns:
-                    new_orders_df_clean['Размер'] = new_orders_df_clean['Размер'].fillna('').astype(
-                        str).replace('nan', '')
+                new_orders_df_clean = new_orders_df_clean.fillna('')
 
                 # 5. Объединение с текущей базой (self.fbs_df)
                 self.show_log("5. Объединение с текущей базой (self.fbs_df)")
@@ -1303,19 +1346,20 @@ class FBSModeOzon(ctk.CTkFrame):
             self.show_log("❌ Выберите строку заказа для завершения сборки.", is_error=True)
             return
 
-        products_to_ship = []
+
         row_index = self.selected_row_index
-        order_id = self.fbs_df.loc[row_index, "Номер заказа"]
+        current_status = self.fbs_df.loc[row_index, "Статус заказа"]
         sku = self.fbs_df.loc[row_index, "sku"]
-        if not order_id or str(order_id).strip() == "":
-            self.show_log("❌ Не определен номер заказа для завершения сборки.", is_error=True)
-            return
         posting_number = self.fbs_df.loc[row_index, "Номер отправления"]
+        if current_status == 'awaiting_deliver':
+            self.show_log(f"Заказ для {posting_number} и товара {sku} уже собран!")
+            return
+
         # Получаем все отправления входящие в текущий заказ
         # mask_orders = self.fbs_df["Номер заказа"] == order_id
         # order_ids = self.fbs_df.loc[mask_orders, "Номер заказа","Номер отправления"]
         # Получаем текущий статус из таблицы
-        current_status = self.fbs_df.loc[row_index, "Статус заказа"]
+
         # 1. Находим ВСЕ товары, относящиеся к этому номеру отправления
         # Даже если в таблице они разнесены по разным строкам
         posting_rows = self.fbs_df[self.fbs_df['Номер отправления'] == posting_number]
@@ -1370,13 +1414,21 @@ class FBSModeOzon(ctk.CTkFrame):
             self.show_log(f"❌ Ошибка сборки отправления {posting_number} : {e}", is_error=True)
             return
 
-    def check_related_shipments(self)-> bool:
+    def check_related_shipments(self) -> bool:
         if self.related_rows:
-            mask = self.fbs_df.index.isin(self.related_rows)
-            has_active = self.fbs_df.loc[mask, 'Статус обработки'].eq(self.assembly_status[1]).all()
+            existing_indices = [idx for idx in self.related_rows if idx in self.fbs_df.index]
+            if not existing_indices:
+                return True
+
+            subset = self.fbs_df.loc[existing_indices, 'Статус обработки']
+            # Гарантируем, что это Series
+            if not isinstance(subset, pd.Series):
+                subset = pd.Series([subset], index=existing_indices)
+            self.show_log(f"Серия для проверки : {subset}")
+            condition = (subset.fillna('') == "Обработан")
+            return condition.all() and len(condition) > 0
         else:
-            has_active = True
-        return has_active
+            return True
 
     def print_label_from_button(self,flag:bool = True):
         """Печать этикетки по кнопке (требование 2)."""
@@ -1391,7 +1443,7 @@ class FBSModeOzon(ctk.CTkFrame):
         # logging.info('Проверка шаблона ID поставки:', bool(re.match(self.pattern,row['Номер поставки'])))
 
         if row['Статус заказа'] == self.define_status[5]:  # 'awaiting_deliver':
-            if self.check_related_shipments() or flag:
+            if (self.check_related_shipments() and row['Статус обработки'] == self.assembly_status[0]) or flag:
                 self._fetch_and_print_wb_label(row["Номер отправления"], self.app_context.printer_name)
             else:
                 # Помечаем товар как обработанный

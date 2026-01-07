@@ -11,3 +11,4 @@ requirements.txt
 test_fbs_logic.py
 app.log
 debug_log.txt
+app_context.pkl

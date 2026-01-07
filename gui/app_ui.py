@@ -14,6 +14,8 @@ from gui.wb_gui import WildberriesMode
 from gui.fbs_autosborka_gui import FBSMode
 from gui.fbs_wb_gui import FBSModeWB
 from gui.fbs_ozon_gui import FBSModeOzon
+import base64
+import logging
 
 CONFIG_FILE = "config.json"
 CONTEXT_FILE = 'app_context.pkl'
@@ -25,6 +27,7 @@ ctk.set_default_color_theme("blue")
 class AppUI:
     def __init__(self, root):
         self.root = root
+        self._setup_logger()  # <--- ДОБАВИТЬ СЮДА
         self.root.title("Склад Ozon / Wildberries")
         self.root.geometry("1700x800")
 
@@ -101,6 +104,36 @@ class AppUI:
         # Теперь можно безопасно вызвать show_database()
         self.show_database()
 
+    def _setup_logger(self):
+        """Настраивает логирование: удаляет дубли, ставит UTF-8 и глушит мусор."""
+        # 1. Получаем корневой логгер
+        root_logger = logging.getLogger()
+
+        # 2. Удаляем ВСЕ существующие обработчики (чтобы не было дублей)
+        if root_logger.hasHandlers():
+            root_logger.handlers.clear()
+
+        # 3. Создаем форматтер
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s')
+
+        # 4. Обработчик для файла (обязательно utf-8)
+        file_handler = logging.FileHandler("app.log", encoding='utf-8')
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
+
+        # 5. Обработчик для консоли
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(formatter)
+        root_logger.addHandler(console_handler)
+
+        # 6. Устанавливаем уровень INFO
+        root_logger.setLevel(logging.INFO)
+
+        # 7. Глушим шумные библиотеки
+        logging.getLogger('PIL').setLevel(logging.WARNING)
+        logging.getLogger('Image').setLevel(logging.WARNING)
+        logging.getLogger('urllib3').setLevel(logging.WARNING)
+        logging.getLogger('fitz').setLevel(logging.WARNING)
     def save_config(self):
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump({"last_excel_path": self.context.file_path},
@@ -120,29 +153,57 @@ class AppUI:
             try:
                 # Сохраняем DataFrame обратно в Excel
                 self.context.df.to_excel(self.context.file_path, index=False)
-                print(f"✅ Данные успешно сохранены в {self.context.file_path}")
+                logging.info(f"✅ Данные успешно сохранены в {self.context.file_path}")
             except Exception as e:
-                print(f"❌ Ошибка при сохранении файла: {e}")
+                logging.error(f"❌ Ошибка при сохранении файла: {e}")
         else:
-            print("⚠️ Нет данных для сохранения или не указан путь к файлу")
+            logging.info("⚠️ Нет данных для сохранения или не указан путь к файлу")
 
     def save_df_to_excel_cis(self):
         """
         Сохраняет DataFrame из контекста обратно в Excel по пути Data/
+        Создаёт резервные копии: _back и _back_back
         """
         temp_dir = "Data"
         file_name = "Справочник кодов маркировки.xlsx"
         os.makedirs(temp_dir, exist_ok=True)
-        filepath = os.path.join(temp_dir,file_name)
+        filepath = os.path.join(temp_dir, file_name)
+
         if self.context.df_cis is not None:
             try:
-                # Сохраняем DataFrame обратно в Excel
+                # Пути к резервным копиям
+                back_file = os.path.join(temp_dir, "Справочник кодов маркировки_back.xlsx")
+                back_back_file = os.path.join(temp_dir, "Справочник кодов маркировки_back_back.xlsx")
+
+                # Если основной файл уже существует, сдвигаем копии
+                if os.path.exists(filepath):
+                    if os.path.exists(back_file):
+                        if os.path.exists(back_back_file):
+                            # Удаляем старую back_back копию
+                            os.remove(back_back_file)
+                        # Перемещаем back в back_back
+                        os.rename(back_file, back_back_file)
+                    # Перемещаем текущий файл в back
+                    os.rename(filepath, back_file)
+
+                # Проверяем, есть ли колонка "Код маркировки"
+                if "Код маркировки" in self.context.df_cis.columns:
+                    # Кодируем значения в Base64
+                    # self.context.df_cis["Код маркировки"] = self.context.df_cis["Код маркировки"].apply(
+                    #     lambda x: base64.b64encode(x.encode('utf-8')).decode('utf-8') if pd.notna(x) else x)
+                    # Удаляем из строки подстроку с управляющими символами: 91EE11
+                    self.context.df_cis["Код маркировки"] = self.context.df_cis["Код маркировки"].apply(
+                        lambda x: x.replace('\x1D91EE11\x1D', '') if pd.notna(x) and isinstance(x, str) else x
+                    )
+
+                # Сохраняем новый DataFrame в основной файл
                 self.context.df_cis.to_excel(filepath, index=False)
-                print(f"✅ Данные успешно сохранены в {filepath}")
+                logging.info(f"✅ Данные успешно сохранены в {filepath}")
+
             except Exception as e:
-                print(f"❌ Ошибка при сохранении файла: {e}")
+                logging.error(f"❌ Ошибка при сохранении файла: {e}")
         else:
-            print("⚠️ Нет данных для сохранения Справочника кодов маркировки")
+            logging.info("⚠️ Нет данных для сохранения Справочника кодов маркировки")
 
     def set_active_and_show(self, screen_func, index):
         self.set_active(index)
@@ -247,7 +308,7 @@ class AppUI:
             try:
                 self.current_frame.save_data_to_context()
             except Exception as e:
-                print(f"[on_close] Ошибка при сохранении данных экрана: {e}")
+                logging.info(f"[on_close] Ошибка при сохранении данных экрана: {e}")
         if self.has_unsaved_changes():
             answer = messagebox.askyesnocancel(
                 "Несохраненные изменения",
@@ -291,5 +352,5 @@ class AppUI:
             return not df1_str.equals(df2_str)
 
         except Exception as e:
-            print(f"[Ошибка] {e}")
+            logging.error(f"[Ошибка] {e}")
             return True  # На всякий случай считаем, что изменения есть
