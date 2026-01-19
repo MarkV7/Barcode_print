@@ -76,11 +76,12 @@ class FBSModeOzon(ctk.CTkFrame):
         self.print_capability = True
         self.related_rows = []
         self.flag_upd = False
+        self.select_barcode_update = False
         self.columns = [
             "Номер заказа", "Номер отправления", "Служба доставки", "Бренд", "Цена",
             "Артикул поставщика", "Количество", "Размер", "Наименование",
-            "Штрихкод", 'Штрихкод Ozon', "Код маркировки", "sku", "product_id",
-            "Статус заказа", "Статус обработки",
+            "Штрихкод", "Штрихкод Ozon", "Код маркировки", "sku", "product_id",
+            "Статус заказа", "Подстатус", "Статус обработки", "is_express" # is_express будет скрыт или служебным
         ]
         self.define_status = ('indefinite', # - неопределено
                               'awaiting_registration', #  — ожидает регистрации,
@@ -162,9 +163,12 @@ class FBSModeOzon(ctk.CTkFrame):
         self.supply_combobox = None
         self.selected_row_index = None  # Для хранения выбранной строки
         self.table_label = None
-        self.check_var = None
+        self.check_var = ctk.BooleanVar(value=True)
         self.checkbox = None
+        self.checkbox2 = None
         self.assign_product = None
+        self.smart_mode_var = ctk.BooleanVar(value=True)
+        self.select_barcode_update = ctk.BooleanVar(value=True)
 
         self.setup_ui()
 
@@ -216,10 +220,30 @@ class FBSModeOzon(ctk.CTkFrame):
                      ).grid(row=mrow, column=0, padx=10, pady=(0, 0))
         mrow += 1
         main_frame.grid_rowconfigure(mrow, weight=0)
-        self.scan_entry = ctk.CTkEntry(main_frame, width=300, font=self.font)
-        self.scan_entry.grid(row=mrow, column=0, padx=0, pady=(0, 0))
-        self.scan_entry.bind('<Return>',
-                             lambda event: self.handle_barcode_input_auto(self.scan_entry.get()))  # if self.input_mode == "barcode" else ghsc()
+
+        # self.scan_entry = ctk.CTkEntry(main_frame, width=300, font=self.font)
+        # self.scan_entry.grid(row=mrow, column=0, padx=0, pady=(0, 0))
+        # self.scan_entry.bind('<Return>',
+        #                      lambda event: self.handle_barcode_input_auto_smart(self.scan_entry.get()))
+        # === НАЧАЛО ИЗМЕНЕНИЙ ===
+        # Создаем контейнер для строки ввода и чекбокса, чтобы они были рядом
+        input_container = ctk.CTkFrame(main_frame, fg_color="transparent")
+        input_container.grid(row=mrow, column=0,  padx=10, pady=(0, 0)) # sticky="ew",
+
+        # Поле ввода (теперь внутри контейнера)
+        self.scan_entry = ctk.CTkEntry(input_container, width=300, font=self.font)
+        self.scan_entry.pack(side="left", padx=(0, 10))  # pack side="left" ставит их в ряд
+
+        # Чекбокс "smart" справа от поля ввода
+        self.smart_checkbox = ctk.CTkCheckBox(input_container, text="smart",
+                                              variable=self.smart_mode_var,
+                                              font=("Segoe UI", 12))
+        self.smart_checkbox.pack(side="left")
+
+        # Привязка Enter к функции-распределителю
+        self.scan_entry.bind('<Return>', self._on_scan_enter)
+
+        # === КОНЕЦ ИЗМЕНЕНИЙ ===
         self.scan_entry.bind("<KeyRelease>", self.reset_clear_timer)
         self.scan_entry.bind("<FocusIn>", self.on_entry_focus_in)
         self.scan_entry.bind("<FocusOut>", self.on_entry_focus_out)
@@ -237,112 +261,143 @@ class FBSModeOzon(ctk.CTkFrame):
         mrow += 1
 
         # Лог (самый нижний элемент)
-        self.log_label = ctk.CTkLabel(main_frame, text="Ожидание сканирования...", font=self.font,
-                                      text_color="grey")
+        self.log_label = ctk.CTkLabel(main_frame, text="Ожидание...",
+                                      font=("Consolas", 14),  # Моноширинный шрифт лучше для логов
+                                      height=30,
+                                      fg_color="#111827",  # Черный фон полосы
+                                      corner_radius=6)
         self.log_label.grid(row=mrow, column=0, sticky="ew", padx=5, pady=(0, 5))
 
         # --- Правая часть: Управление ---
-        control_panel = ctk.CTkFrame(self, width=300)
+        # control_panel = ctk.CTkFrame(self, width=300)
+        control_panel = ctk.CTkFrame(self, width=320, fg_color=("gray90", "#2B2B2B"))  # Чуть светлее фона
         control_panel.grid(row=0, column=1, sticky="ns", padx=(0, 10), pady=10)
         control_panel.grid_columnconfigure(0, weight=1)
-
+        # Шрифты и отступы
+        btn_font = ctk.CTkFont(family="Segoe UI", size=13, weight="bold")
+        pad_opt = {'padx': 15, 'pady': 5}
         row = 0
-        # ctk.CTkButton(control_panel, text="Загрузить заказы из Excel",
-        #               command=self.load_orders, font=self.font,
-        #               # fg_color="blue",
-        #               state="normal").grid(row=row, column=0, padx=10, pady=(10, 5), sticky="ew")
-        # row += 1
-        # 1. Кнопка "Загрузить товары" (Требование 5 - смещено вверх)
-        ctk.CTkButton(control_panel, text="Загрузить заказы из Ozon", command=self.load_ozon_orders, font=self.font,
-                      fg_color="blue", state="normal").grid(row=row, column=0, padx=10, pady=(10, 5), sticky="ew")
+
+        # === БЛОК 1: ДАННЫЕ (OZON BLUE) ===
+        ctk.CTkLabel(control_panel, text="ДАННЫЕ", font=("Segoe UI", 11, "bold"), text_color="gray").grid(row=row,
+                                                                                                          column=0,
+                                                                                                          sticky="w",
+                                                                                                          padx=15,
+                                                                                                          pady=(10, 0))
         row += 1
-        ctk.CTkButton(control_panel, text="Обновить статусы заказа", command=self.update_orders_statuses_from_api,
-                      font=self.font,
-                      fg_color="gray", state="normal").grid(row=row, column=0, padx=10, pady=(10, 5), sticky="ew")
+        ctk.CTkButton(control_panel, text="📥 Загрузить заказы OZON",
+                      command=self.load_ozon_orders,
+                      font=btn_font,
+                      height=35,
+                      fg_color="#005BFF", hover_color="#0046C7").grid(row=row, column=0, sticky="ew", **pad_opt)
+        row += 1
+        ctk.CTkButton(control_panel, text="🔄 Обновить статусы",
+                      command=self.update_orders_statuses_from_api,
+                      font=btn_font,
+                      height=35,
+                      fg_color="#4B5563", hover_color="#374151").grid(row=row, column=0, sticky="ew", **pad_opt)
+        row += 1
+        # === НОВАЯ КНОПКА ===
+        self.btn_update_prices = ctk.CTkButton(
+            control_panel,
+            text="💰 Обновить цены",
+            command=self.update_buyer_prices_from_finance,
+            fg_color="#2c3e50",  # Темно-синий/серый цвет, чтобы отличалась
+            hover_color="#34495e",
+            width=140
+        )
+        self.btn_update_prices.grid(row=row, column=0, sticky="ew", **pad_opt)
         row += 1
         # --- Разделитель ---
-        # ctk.CTkFrame(control_panel, height=2, fg_color="gray").grid(row=row, column=0, padx=10, pady=10, sticky="ew")
-
-        # 2. Поле сканирования Штрихкода Товара
-        ctk.CTkLabel(control_panel, text="Поиск товара по ШК:", font=self.font).grid(row=row, column=0, padx=10,
-                                                                                     pady=(10, 0), sticky="w")
-        row += 1
-        self.scan_entry2 = ctk.CTkEntry(control_panel, font=self.font)
-        self.scan_entry2.bind('<Return>', lambda event: self.handle_barcode_input(self.scan_entry.get()))
-        self.scan_entry2.grid(row=row, column=0, padx=10, pady=(0, 10), sticky="ew")
+        ctk.CTkFrame(control_panel, height=2, fg_color="gray40").grid(row=row, column=0, sticky="ew", padx=10, pady=10)
         row += 1
 
-        # Создание переменной для контроля состояния
-        self.check_var = ctk.StringVar(value="on")
-        # Создание чекбокса
-        self.checkbox = ctk.CTkCheckBox(control_panel, text="АвтоПечать", command=self.checkbox_event,
+        # === БЛОК 2: СКАНИРОВАНИЕ И ВВОД ===
+        ctk.CTkLabel(control_panel, text="ОПЕРАЦИИ", font=("Segoe UI", 11, "bold"), text_color="gray").grid(row=row,
+                                                                                                            column=0,
+                                                                                                            sticky="w",
+                                                                                                            padx=15,
+                                                                                                            pady=(0, 0))
+        row += 1
+
+        # Поиск товара
+        self.scan_entry2 = ctk.CTkEntry(control_panel, placeholder_text="Поиск товара по ШК...", font=self.font,
+                                        height=35)
+        self.scan_entry2.bind('<Return>', lambda event: self.handle_barcode_input(self.scan_entry2.get()))
+        self.scan_entry2.grid(row=row, column=0, sticky="ew", **pad_opt)
+        row += 1
+
+        # Чекбокс2
+        self.checkbox2 = ctk.CTkCheckBox(control_panel, text="Режим поиск\ввод",
+                                        variable=self.select_barcode_update,
+                                        font=("Segoe UI", 12))
+        self.checkbox2.grid(row=row, column=0, sticky="w", padx=15, pady=5)
+        row += 1
+
+        # Сканирование КИЗ
+        self.cis_entry = ctk.CTkEntry(control_panel, placeholder_text="Сканирование Честный Знак...", font=self.font,
+                                      height=35)
+        self.cis_entry.bind('<Return>', lambda event: self.handle_cis_input(self.cis_entry.get()))
+        self.cis_entry.grid(row=row, column=0, sticky="ew", **pad_opt)
+        row += 1
+
+        # Чекбокс
+        self.checkbox = ctk.CTkCheckBox(control_panel, text="Авто-печать после скана",
                                         variable=self.check_var,
-                                        onvalue="on", offvalue="off")
-        self.checkbox.grid(row=row, column=0, padx=10, pady=0, sticky="w")
+                                        font=("Segoe UI", 12))
+        self.checkbox.grid(row=row, column=0, sticky="w", padx=15, pady=5)
         row += 1
 
-        # 3. Поле сканирования КИЗ (Маркировки) (Требование 3)
-        ctk.CTkLabel(control_panel, text="Сканирование Честный знак:", font=self.font).grid(row=row, column=0, padx=10,
-                                                                                        pady=(10, 0), sticky="w")
-        row += 1
-        self.cis_entry = ctk.CTkEntry(control_panel, font=self.font)
-        self.cis_entry.bind('<Return>', lambda event: self.handle_cis_input(self.cis_entry.get())) #ghsc()   #
-        self.cis_entry.grid(row=row, column=0, padx=10, pady=(0, 10), sticky="ew")
-        row += 1
-
-        # 8. Кнопка "Очистить КИЗ"
-        self.transfer_button = ctk.CTkButton(control_panel, text="Очистить КИЗ",
+        # Кнопка очистки (Red/Destructive)
+        self.transfer_button = ctk.CTkButton(control_panel, text="🗑 Очистить КИЗ",
                                              command=self.clear_cis_button,
-                                             font=self.font,
-                                             fg_color="gray",
-                                             state="normal")
-        self.transfer_button.grid(row=row, column=0, padx=10, pady=10, sticky="ew")
-        row += 1
-        # # Кнопка "Тестирование"
-        # self.transfer_button2 = ctk.CTkButton(control_panel, text="Тестирование",
-        #                                      command=self.test_auto_handle,
-        #                                      font=self.font,
-        #                                      fg_color="gray",
-        #                                      state="normal")
-        # self.transfer_button2.grid(row=row, column=0, padx=10, pady=10, sticky="ew")
-        # row += 1
-        # Кнопка "Сохранить текущую базу кодов маркировки"
-        # self.transfer_button2 = ctk.CTkButton(control_panel, text="Сохранить базу КИЗ",
-        #                                      command=self.save_df_to_parquet,
-        #                                      font=self.font,
-        #                                      fg_color="gray",
-        #                                      state="normal")
-        # self.transfer_button2.grid(row=row, column=0, padx=10, pady=10, sticky="ew")
-        # row += 1
-        # --- Разделитель ---
-        ctk.CTkFrame(control_panel, height=2, fg_color="gray").grid(row=row, column=0, padx=10, pady=10,
-                                                                    sticky="ew")
+                                             font=btn_font,
+                                             fg_color="#EF4444", hover_color="#DC2626")  # Красный
+        self.transfer_button.grid(row=row, column=0, sticky="ew", **pad_opt)
         row += 1
 
-        # 4. Кнопка "Собрать заказ"
-        self.assembly_button = ctk.CTkButton(control_panel, text="Собрать заказ",
-                                             command=self.finalize_manual_assembly, font=self.font,
-                                             fg_color="green",
-                                             state="normal")
-        self.assembly_button.grid(row=row, column=0, padx=10, pady=10, sticky="ew")
+        # Разделитель
+        ctk.CTkFrame(control_panel, height=2, fg_color="gray40").grid(row=row, column=0, sticky="ew", padx=10, pady=10)
         row += 1
 
-        # 4. Кнопка "Привязать КИЗ к заказу"
-        self.assign_product = ctk.CTkButton(control_panel, text="Привязать КИЗ к заказу",
-                                            command=self.assign_product_label, font=self.font, fg_color="green",
+        # === БЛОК 3: СБОРКА И ПЕЧАТЬ (MAIN ACTIONS) ===
+        # Собрать заказ (Emerald Green)
+        self.assembly_button = ctk.CTkButton(control_panel, text="СОБРАТЬ ЗАКАЗ",
+                                             command=self.finalize_manual_assembly,
+                                             font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+                                             height=45,
+                                             fg_color="#10B981", hover_color="#059669",  # Зеленый (Emerald)
+                                             state="disabled")
+        self.assembly_button.grid(row=row, column=0, sticky="ew", **pad_opt)
+        row += 1
+
+        # Привязать КИЗ
+        self.assign_product = ctk.CTkButton(control_panel, text="🔗 Привязать КИЗ к заказу",
+                                            command=self.assign_product_label,
+                                            font=btn_font,
+                                            fg_color="#8B5CF6", hover_color="#7C3AED",  # Фиолетовый
                                             state="disabled")
-        self.assign_product.grid(row=row, column=0, padx=10, pady=10, sticky="ew")
+        self.assign_product.grid(row=row, column=0, sticky="ew", **pad_opt)
         row += 1
 
-        # 7. Кнопка "Печать Этикетки" (Требование 2)
-        self.print_button = ctk.CTkButton(control_panel, text="🖨️ Печать Этикетки",
-                                          command=self.print_label_from_button, font=self.font, fg_color="gray",
+        # Печать (Indigo/Slate)
+        self.print_button = ctk.CTkButton(control_panel, text="🖨️ ПЕЧАТЬ ЭТИКЕТКИ",
+                                          command=self.print_label_from_button,
+                                          font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+                                          height=45,
+                                          fg_color="#4F46E5", hover_color="#4338CA",  # Indigo
                                           state="disabled")
-        self.print_button.grid(row=row, column=0, padx=10, pady=10, sticky="ew")
+        self.print_button.grid(row=row, column=0, sticky="ew", **pad_opt)
         row += 1
 
-        # Убедимся, что все элементы управления выровнены по верху
-        control_panel.grid_rowconfigure(row, weight=1)
+        # # Testing
+        # ctk.CTkButton(control_panel, text="Testing",
+        #                                   command=self.testing_print(),
+        #                                   font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+        #                                   height=45,
+        #                                   fg_color="#4F46E5", hover_color="#4338CA",  # Indigo
+        #                                   state="disabled").grid(row=row, column=0, sticky="ew", **pad_opt)
+        # row += 1
 
         # Инициализация таблицы
         # Используем EditableDataTable
@@ -372,6 +427,77 @@ class FBSModeOzon(ctk.CTkFrame):
         self.update_table()
         # self.update_supply_combobox()
         self.start_auto_focus()
+
+    def update_buyer_prices_from_finance(self):
+        """
+        Запрашивает финансовый отчет и обновляет поле 'Цена'.
+        Добавлена проверка наличия поля accruals_for_sale.
+        """
+        if self.fbs_df is None or self.fbs_df.empty:
+            self.show_log("Таблица пуста. Нечего обновлять.", is_error=True)
+            return
+
+        postings = self.fbs_df["Номер отправления"].astype(str).unique().tolist()
+        postings = [p for p in postings if p.strip() and p != 'nan']
+
+        if not postings:
+            self.show_log("Нет номеров отправлений для анализа.", is_error=True)
+            return
+
+        self.show_log(f"Запрос фин. данных для {len(postings)} заказов...")
+        updated_count = 0
+
+        for posting_no in postings:
+            try:
+                response = self.api.get_order_transaction_info(posting_no)
+
+                if response and "result" in response:
+                    operations = response["result"].get("operations", [])
+
+                    for op in operations:
+                        # --- ПРОВЕРКА ПОЛЯ ---
+                        # Проверяем, существует ли ключ и не является ли значение None
+                        if "accruals_for_sale" not in op or op.get("accruals_for_sale") is None:
+                            logging.debug(f"В операции для {posting_no} отсутствует начисление (accruals_for_sale).")
+                            continue
+
+                        accrual = op.get("accruals_for_sale", 0)
+
+                        items = op.get("items", [])
+                        for it in items:
+                            sku = str(it.get("sku"))
+
+                            # Если начисление есть и оно не нулевое (значит продажа зафиксирована)
+                            if accrual != 0:
+                                mask = (self.fbs_df["Номер отправления"].astype(str) == posting_no) & \
+                                       (self.fbs_df["sku"].astype(str) == sku)
+
+                                if mask.any():
+                                    try:
+                                        price_val = str(int(float(accrual)))
+                                        self.fbs_df.loc[mask, "Цена"] = price_val
+                                        updated_count += 1
+                                    except (ValueError, TypeError):
+                                        continue
+
+            except Exception as e:
+                logging.error(f"Ошибка при обработке {posting_no}: {e}")
+
+        self.update_table()
+        self.save_data_to_context()
+        self.show_log(f"✅ Цены обновлены из фин. отчета. Успешно: {updated_count} поз.")
+
+    def _on_scan_enter(self, event):
+        """
+        Распределяет логику сканирования в зависимости от чекбокса 'smart'.
+        """
+        input_value = self.scan_entry.get()
+        if self.smart_mode_var.get():
+            self.show_log("Режим сканирования: Smart")
+            self.handle_barcode_input_auto_smart(input_value)
+        else:
+            self.show_log("Режим сканирования: Обычный (Auto)")
+            self.handle_barcode_input_auto(input_value)
 
     def save_df_to_parquet(self, filename: str = "data_OZON.parquet", subdir: str = "Parquet"):
         """
@@ -468,6 +594,11 @@ class FBSModeOzon(ctk.CTkFrame):
         return [str(raw_value)]
 
     def is_valid_chestny_znak(self, code: str) -> bool:
+        # Проверяем, содержит ли строка неправильный регистр в известных фиксированных частях
+        # Например: 91ee11 вместо 91EE11 — признак Caps Lock
+        if '91ee11' in code or '92ee' in code.lower():  # можно расширить
+            self.show_log('Отключите Casp Lock и сканируйте код маркировки еще раз')
+            return False
         # Убираем спецсимволы разделители (FNC1 / GS / \x1d), если сканер их передает
         clean_code = code.replace('\x1d', '').strip()
 
@@ -573,6 +704,9 @@ class FBSModeOzon(ctk.CTkFrame):
         self.data_table.tree.tag_configure("awaiting_registration", background="#D2E1C8")
         # Светло-голубой для строк того же отправления
         self.data_table.tree.tag_configure("related_posting", background="#E0FFFF")
+        self.data_table.tree.tag_configure("express", background="#FF8C00", foreground="black")  # Ярко-оранжевый
+        self.data_table.tree.tag_configure("express_collected", background="#CD853F",
+                                 foreground="white")  # Темный оранжевый (собран)
 
     # --- МЕТОДЫ ОБРАБОТКИ СКАНИРОВАНИЯ ---
     def handle_barcode_input(self, input_value: str):
@@ -580,52 +714,252 @@ class FBSModeOzon(ctk.CTkFrame):
         Обрабатывает ввод штрихкода.
         """
         self.editing = True
-        self.current_barcode = input_value.strip()
-        self.scan_entry.delete(0, 'end')  # Очищаем поле сразу
-
-        if not self.current_barcode:
-            self.show_log("❌ Ошибка: Введите штрихкод.", is_error=True)
-            self.editing = False
-            self.start_auto_focus()
-            return
-
-        self.show_log(f"Сканирование: {self.current_barcode}")
-        # logging.info(str(self.current_barcode))
-        # logging.info(self.fbs_df['Штрихкод'].astype(str))
-        # 1. Поиск: ищем  Штрихкод производителя в текущих заказах
-        matches = self.fbs_df[(self.fbs_df['Штрихкод'].astype(str) == str(self.current_barcode))
-                              & (self.fbs_df["Статус обработки"] == self.assembly_status[0])].copy()
-        row_index = 0
-
-        if not matches.empty:
-            # --- Логика Сборки по сканированию (автоматическая) ---
-            row_index = matches.index[0]
-            # logging.info('row_index',row_index)
-            row = self.fbs_df.loc[row_index]
-            self.selected_row_index = row_index
-            # --- ДОБАВЛЕНИЕ ЛОГИКИ ВЫДЕЛЕНИЯ И ФОКУСА - --
-
-            self.data_table.select_row(row_index)  # выделение строки
+        barcode = input_value.strip()
+        self.scan_entry2.delete(0, 'end')  # Очищаем поле сразу
+        if not self.select_barcode_update.get():
+            self.show_log("Обрабатываем ситуацию когда надо установить штрихкод")
+            if not barcode:
+                self.show_log("❌ Ошибка: Введите штрихкод.", is_error=True)
+                self.start_auto_focus()
+                return
+            if self.selected_row_index is None:
+                self.show_log("Не выделена активная строка для ввода Штрихкода")
+                self.start_auto_focus()
+                return
+            # Извлекаем значение из DataFrame
+            barcode_value = self.fbs_df.at[self.selected_row_index, "Штрихкод"]
+            # 1. Проверка на пропущенное значение (NaN)
+            is_nan = pd.isna(barcode_value)
+            # 2. Проверка на пустую строку (после приведения к строке и удаления пробелов)
+            is_empty_string = str(barcode_value).strip() == ""
+            if is_nan or is_empty_string:
+                self.show_log("Поле для ввода Штрихкода пусто, можно вводить новое значение")
+            else:
+                answer = messagebox.askyesnocancel(
+                    "Поле Штрихкод не пусто",
+                    "Вы точно хотите внести новое значение \n"
+                    "и заменить старое?"
+                )
+                if not answer:
+                    return
+            # Если выбрана строка, привязываем штрихкод к ней
+            row = self.fbs_df.loc[self.selected_row_index]
+            # Сохраняем штрихкод
+            self.fbs_df.at[self.selected_row_index, "Штрихкод"] = barcode
+            self.data_table.select_row(self.selected_row_index)
+            # Сохраняем в основную базу данных
+            self.save_to_main_database(row, barcode)
+            self.update_table()
+            # # Сохраняем в контекст
+            self.save_data_to_context()
             play_success_scan_sound()
-            if self.check_var.get() == 'on':
-                self.show_log(f"Печатаем этикетку {self.current_barcode} ШК  ")
-                self.print_label_from_button()
-        # 2. Несовпадение: возможно, это новый ШК или артикул для добавления
+            # if self.check_var.get():
+            #     self.show_log(f"Печатаем этикетку {barcode} ШК  ")
+            #     self.print_label_from_button()
+            self.show_log(f"✅ Штрихкод {barcode} привязан. Теперь можно ввести код маркировки, при необходимости...")
+            # Переключаемся на ввод маркировки
+            self.input_mode = "marking"
+            self.pending_barcode = barcode
+            # Очищаем поле ввода
+            self.scan_entry.delete(0, "end")
+            self.restore_entry_focus()
         else:
-            # self.handle_unmatched_barcode(self.current_barcode) Этот метод реализовать позже
-            self.show_log(f"Несовпадение: возможно, это новый {self.current_barcode} ШК или артикул ")
+            self.show_log("Обрабатываем ситуацию когда ищем строку с заданным штрихкодом")
+            if not barcode:
+                self.show_log("❌ Ошибка: Введите штрихкод.", is_error=True)
+                self.editing = False
+                self.start_auto_focus()
+                return
 
-        # logging.info('row_index', row_index)
-        # self._select_row_by_index(row_index)
-        # self.editing = True
-        # self.start_auto_focus()
+            self.show_log(f"Сканирование: {barcode}")
+            # 1. Поиск: ищем  Штрихкод производителя в текущих заказах
+            matches = self.fbs_df[(self.fbs_df['Штрихкод'].astype(str) == str(barcode))
+                                  & (self.fbs_df["Статус обработки"] == self.assembly_status[0])].copy()
+            row_index = 0
 
-    def test_auto_handle(self):
-        list_barcode = list(zip(self.fbs_df["Количество"], self.fbs_df["Штрихкод"]))
-        for item in list_barcode:
-            self.handle_barcode_input_auto(item[1])
-            for _ in range(item[0]):
-                self.handle_barcode_input_auto(ghsc())
+            if not matches.empty:
+                # --- Логика Сборки по сканированию (автоматическая) ---
+                row_index = matches.index[0]
+                # logging.info('row_index',row_index)
+                row = self.fbs_df.loc[row_index]
+                self.selected_row_index = row_index
+                # --- ДОБАВЛЕНИЕ ЛОГИКИ ВЫДЕЛЕНИЯ И ФОКУСА - --
+
+                self.data_table.select_row(row_index)  # выделение строки
+                play_success_scan_sound()
+                # if self.check_var.get():
+                #     self.show_log(f"Печатаем этикетку {barcode} ШК  ")
+                #     self.print_label_from_button()
+            # 2. Несовпадение: возможно, это новый ШК или артикул для добавления
+            else:
+                # self.handle_unmatched_barcode(barcode) Этот метод реализовать позже
+                self.show_log(f"Несовпадение: возможно, это новый {barcode} ШК или артикул ")
+
+    def handle_barcode_input_auto_smart(self, input_value: str):
+        """
+        Обрабатывает автоматически  ввод кода и определяем, что это штрихкод или код маркировки,
+        для поля автосборки и автоматической обработки
+        """
+        self.current_barcode = input_value.strip()
+        input_value = input_value.strip()
+        if not input_value:
+            self.input_mode = "marking"
+            self.show_log(f"Введен пустой Enter ")
+            self.handle_marking_input_smart(input_value)
+        elif self.is_valid_barcode(input_value):
+            self.input_mode = "barcode"
+            self.show_log(f"Введен штрихкод товара")
+            self.handle_barcode_input_for_smart(input_value)
+        elif self.is_valid_chestny_znak(input_value):
+            self.input_mode = "marking"
+            self.show_log(f"Введен код маркировки ")
+            self.handle_marking_input_smart(input_value)
+        else:
+            self.show_log(f"Не определен вид сканированного кода")
+
+
+    def handle_barcode_input_for_smart(self, barcode):
+        """ Обрабатывает полученный штрихкод,
+        в автосборке для handle_barcode_input_auto_smart
+        """
+        if not self.select_barcode_update.get():
+            self.show_log("Обрабатываем ситуацию когда надо установить штрихкод")
+            if self.selected_row_index is None:
+                self.show_log("Не выделена активная строка для ввода Штрихкода")
+                return
+            # Извлекаем значение из DataFrame
+            barcode_value = self.fbs_df.at[self.selected_row_index, "Штрихкод"]
+            # 1. Проверка на пропущенное значение (NaN)
+            is_nan = pd.isna(barcode_value)
+            # 2. Проверка на пустую строку (после приведения к строке и удаления пробелов)
+            is_empty_string = str(barcode_value).strip() == ""
+            if is_nan or is_empty_string:
+                self.show_log("Поле для ввода Штрихкода пусто, можно вводить новое значение")
+            else:
+                answer = messagebox.askyesnocancel(
+                    "Поле Штрихкод не пусто",
+                    "Вы точно хотите внести новое значение \n"
+                    "и заменить старое?"
+                )
+                if not answer:
+                    return
+            # Если выбрана строка, привязываем штрихкод к ней
+            row = self.fbs_df.loc[self.selected_row_index]
+            # Сохраняем штрихкод
+            self.fbs_df.at[self.selected_row_index, "Штрихкод"] = barcode
+            # Сохраняем в основную базу данных
+            self.save_to_main_database(row, barcode)
+            self.update_table()
+            # # Сохраняем в контекст
+            self.save_data_to_context()
+            play_success_scan_sound()
+            self.show_log(f"✅ Штрихкод {barcode} привязан. Теперь введите код маркировки...")
+            # Переключаемся на ввод маркировки
+            self.input_mode = "marking"
+            self.pending_barcode = barcode
+            # Очищаем поле ввода
+            self.scan_entry.delete(0, "end")
+            self.restore_entry_focus()
+        else:
+            self.show_log("Обрабатываем ситуацию когда ищем строку с заданным штрихкодом")
+            # Если строка не выбрана, ищем по штрихкоду
+            matches = self.fbs_df[(self.fbs_df['Штрихкод'].astype(str) == str(barcode))
+                                  & (self.fbs_df["Статус обработки"] == self.assembly_status[0])
+                                  ]
+            row_index = 0
+            if not matches.empty:
+                # --- Логика Сборки по сканированию (автоматическая) ---
+                row_index = matches.index[0]
+                # logging.info('row_index',row_index)
+                row = self.fbs_df.loc[row_index]
+                self.selected_row_index = row_index
+                # --- ДОБАВЛЕНИЕ ЛОГИКИ ВЫДЕЛЕНИЯ И ФОКУСА - --
+                self.data_table.select_row(row_index)  # выделение строки
+
+                # Запрашиваем код маркировки
+                self.input_mode = "marking"
+                self.pending_barcode = barcode
+                # self.scanning_label.configure(text="Введите код маркировки... 🏷️")
+                self.show_log(f"Найдена строка: Номер отправления: {row['Номер отправления']}. Введите код маркировки...")
+                self.scan_entry.delete(0, "end")
+                self.restore_entry_focus()
+            else:
+                self.show_log("Ошибка: Штрихкод не найден в заказах", is_error=True)
+                play_unsuccess_scan_sound()
+
+    def handle_marking_input_smart(self, marking_code: str):
+        """Обрабатывает ввод кода маркировки, для поля автосборки"""
+        flag_debug = True
+        self.cis_entry.delete(0, 'end')
+        if self.selected_row_index is not None:
+            row = self.fbs_df.loc[self.selected_row_index]
+            # Записываем код маркировки в таблицу, если значение не пусто
+            if marking_code:
+                self.show_log("Обрабатываем код маркировки")
+                # Проверяй корректность введенного кода
+                quantity = int(row['Количество'])
+                # === ИСПОЛЬЗУЕМ НОВУЮ ФУНКЦИЮ ===
+                # Получаем гарантированный список, независимо от того, что там лежало (строка, нан, список)
+                cis_list = self._normalize_cis_to_list(self.fbs_df.at[self.selected_row_index, 'Код маркировки'])
+
+                # Обновляем ячейку (на случай если там была строка, теперь там будет чистый список)
+                # Это важно сделать сразу, чтобы последующие append работали корректно
+                self.fbs_df.at[self.selected_row_index, 'Код маркировки'] = cis_list
+                len_cis = len(cis_list)
+
+                if len_cis < quantity:
+                    self.fbs_df.loc[self.selected_row_index, 'Код маркировки'].append(marking_code)
+                    self.show_log(f"✅ КИЗ записаны для отправления {row['Номер отправления']} и товара {row['sku']}.")
+                    self.update_table()
+                    # # Сохраняем в контекст
+                    self.save_data_to_context()
+                    len_cis += 1
+                    # if len_cis == quantity:
+                    # Привяжем список код маркировки к метаданным заказа Озон
+                    self.assign_product_label_internal_directory(marking_code,row)
+                    if len_cis < quantity:
+                        self.show_log(
+                            f"Необходимо заполнить еще {quantity - len_cis} КИЗ для отправления {row['Номер отправления']} и товара {row['sku']}.")
+                        self.input_mode = "marking"
+                        # Сохраняем данные в контекст
+                        # self.save_data_to_context()
+                        # # Обновляем таблицу
+                        # self.update_table()
+                        # self.scan_entry.delete(0, "end")
+                        self.restore_entry_focus()
+                        return
+                else:
+                    self.show_log(
+                        f"✅ Список КИЗ УЖЕ ЗАПОЛНЕН !!! для отправления {row['Номер отправления']} и товара {row['sku']}.")
+            else:
+                self.show_log(
+                    f"Предупреждение! Для отправления {row['Номер отправления']} и товара {row['sku']} не задан КИЗ.")
+            # Собираем заказ
+            # self.show_log(f"self.finalize_manual_assembly()")
+            self.finalize_manual_assembly()
+            # Печатаем этикетку
+            # self.show_log(f"self.print_label_from_button(flag=False)")
+            if self.check_var.get():
+                self.show_log(f"Печатаем этикетку {self.pending_barcode} ШК  ")
+                self.print_label_from_button(flag=False)
+
+            # Сохраняем данные в контекст
+            self.save_data_to_context()
+            play_success_scan_sound()
+            # Обновляем таблицу
+            self.update_table()
+
+            # Сбрасываем состояние
+            # self.selected_row_index = None # Это почему так?
+            self.input_mode = "barcode"
+            self.pending_barcode = None # Это зачем?
+            # self.scanning_label.configure(text="Ожидание сканирования... 📱")
+
+            self.scan_entry.delete(0, "end")
+            self.restore_entry_focus()
+        else:
+            self.show_log("Ошибка: Не выбрана строка для маркировки", is_error=True)
+            play_unsuccess_scan_sound()
 
     def handle_barcode_input_auto(self, input_value: str):
         """
@@ -864,7 +1198,7 @@ class FBSModeOzon(ctk.CTkFrame):
             self.finalize_manual_assembly()
             # Печатаем этикетку
             # self.show_log(f"self.print_label_from_button(flag=False)")
-            if self.check_var.get() == 'on':
+            if self.check_var.get():
                 self.show_log(f"Печатаем этикетку {self.pending_barcode} ШК  ")
                 self.print_label_from_button(flag=False)
 
@@ -977,9 +1311,12 @@ class FBSModeOzon(ctk.CTkFrame):
 
     def save_to_main_database(self, row=None, barcode=None):
         """Сохраняет штрихкод в основную базу данных"""
+        if self.selected_row_index is None:
+            logging.info("Сохранение пропущено: активная строка не выбрана.")
+            return
         if self.app_context.df is None:
             return
-        if not row:
+        if row is None:
             row = self.fbs_df.loc[self.selected_row_index]
             barcode = row['Штрихкод']
         if not barcode:
@@ -1430,6 +1767,26 @@ class FBSModeOzon(ctk.CTkFrame):
         else:
             return True
 
+    def check_shipments(self) -> bool:
+        row = self.fbs_df.loc[self.selected_row_index]
+        posting_number = row["Номер отправления"]
+        mask = self.fbs_df["Номер отправления"] == posting_number
+        if mask.sum() > 1:
+            self.show_log(f"Проверка с check_shipments и mask.sum() > 1")
+            filtered_df = self.fbs_df[mask & (self.fbs_df.index != self.selected_row_index)]
+            all_processed = (filtered_df['Статус обработки'] == "Обработан").all()
+            if all_processed and row['Статус обработки'] == "Не обработан":
+                return True
+            else:
+                return False
+        else:
+            return True
+
+    # def testing_print(self):
+    #     for index, row in self.fbs_df.iterrows():
+    #         self.selected_row_index = index
+    #         print(row["Номер отправления"],' - ', self.check_shipments())
+
     def print_label_from_button(self,flag:bool = True):
         """Печать этикетки по кнопке (требование 2)."""
         if self.selected_row_index is None:
@@ -1443,7 +1800,8 @@ class FBSModeOzon(ctk.CTkFrame):
         # logging.info('Проверка шаблона ID поставки:', bool(re.match(self.pattern,row['Номер поставки'])))
 
         if row['Статус заказа'] == self.define_status[5]:  # 'awaiting_deliver':
-            if (self.check_related_shipments() and row['Статус обработки'] == self.assembly_status[0]) or flag:
+            # if (self.check_related_shipments() and row['Статус обработки'] == self.assembly_status[0]) or flag:
+            if flag or self.check_shipments():
                 self._fetch_and_print_wb_label(row["Номер отправления"], self.app_context.printer_name)
             else:
                 # Помечаем товар как обработанный
@@ -1580,23 +1938,110 @@ class FBSModeOzon(ctk.CTkFrame):
         except Exception:
             pass
 
-    # def update_status(self, status: int = 0, supply: str = None):
-    #     if supply:
-    #         mask = self.fbs_df['Номер поставки'] == supply
-    #         self.fbs_df.loc[mask, 'Статус заказа'] = self.define_status[status]
-    #     else:
-    #         # --- 1. Обработка пустых значений (Заполнение заданным дефолтным статусом) ---
-    #         # Сначала заполняем NaN (стандартное отсутствие данных в Pandas)
-    #         self.fbs_df['Статус заказа'] = self.fbs_df['Статус заказа'].fillna(self.define_status[status])
-    #
-    #         # Затем находим и заменяем пустые строки или строки, состоящие из пробелов
-    #         empty_string_mask = (self.fbs_df['Статус заказа'].astype(str).str.strip() == '')
-    #         self.fbs_df.loc[empty_string_mask, 'Статус заказа'] = self.define_status[status]
-    #     self.update_table()
-
-
-
     def update_orders_statuses_from_api(self):
+        """
+        Получает и обновляет статусы, номера заказов и ЦЕНЫ товаров из API Ozon.
+        """
+        debug_info = False
+        if self.fbs_df.empty:
+            self.show_log("Нет данных для обновления статусов.", is_error=False)
+            return
+
+        # Явно приводим колонку к строкам один раз, чтобы избежать FutureWarning
+        self.fbs_df["Номер заказа"] = self.fbs_df["Номер заказа"].astype(str)
+
+        # 1. Извлекаем список уникальных отправлений для запроса
+        try:
+            # Получаем уникальные, не пустые номера отправлений
+            unique_postings = self.fbs_df[self.fbs_df["Номер отправления"].astype(str).str.strip() != ""][
+                "Номер отправления"].unique().tolist()
+        except KeyError:
+            self.show_log("❌ Ошибка: Колонка 'Номер отправления' не найдена.", is_error=True)
+            return
+
+        if not unique_postings:
+            self.show_log("Нет номеров отправления для проверки.", is_error=False)
+            return
+
+        try:
+            self.show_log(f"Ozon API: Запрос статусов и цен для {len(unique_postings)} отправлений...")
+
+            # 2. Вызов API для каждого отправления (как в требовании)
+            # Собираем ответы в список. Обрабатываем ошибки внутри генератора или ниже
+            status_response = []
+            for check_order in unique_postings:
+                try:
+                    resp = self.api.get_status_orders(check_order)
+                    if resp and "result" in resp:
+                        status_response.append(resp["result"])
+                except Exception as e:
+                    logging.warning(f"Ошибка запроса API для {check_order}: {e}")
+
+            # 3. Обработка и обновление DataFrame
+            for item in status_response:
+                # 3.1. Извлечение общих данных отправления
+                posting_number = item.get('posting_number')
+                # В JSON есть order_number (строка) и order_id (число). Обычно для UI лучше order_number.
+                new_order_number = item.get('order_id')
+                new_status = item.get('status')
+                substatus = item.get('substatus', "")  # Получаем подстатус
+                is_express = item.get('is_express', False)  # Получаем флаг экспресса
+                products_data = item.get("products", [])
+
+                if not posting_number or not new_status:
+                    continue
+
+                try:
+                    # Приводим к строке для поиска
+                    str_posting = str(posting_number).strip()
+
+                    # 3.2. Обновление общих полей (Статус, Номер заказа) для ВСЕХ строк этого отправления
+                    mask_posting = self.fbs_df["Номер отправления"].astype(str) == str_posting
+
+                    if not mask_posting.any():
+                        continue
+
+                    # Обновляем номер заказа
+                    if new_order_number:
+                        self.fbs_df.loc[mask_posting, "Номер заказа"] = str(new_order_number)
+
+                    # Обновляем статус заказа
+                    self.fbs_df.loc[mask_posting, "Статус заказа"] = new_status
+                    self.fbs_df.loc[mask_posting, "Подстатус"] = substatus
+                    self.fbs_df.loc[mask_posting, "is_express"] = is_express
+
+                    # 3.3. Обновление ЦЕНЫ по SKU (разворачиваем массив products)
+                    for prod in products_data:
+                        sku_api = prod.get('sku')  # В JSON это число (int), например 180550365
+                        price_api = prod.get('price')  # В JSON это строка "279.0000"
+
+                        if sku_api and price_api:
+                            # Форматируем цену (убираем лишние нули)
+                            try:
+                                clean_price = str(int(float(price_api)))
+                            except ValueError:
+                                clean_price = str(price_api)
+
+                            # Ищем конкретную строку: То же отправление И Тот же SKU
+                            # Важно: приводим оба SKU к строке для точного сравнения
+                            mask_product = mask_posting & (self.fbs_df["sku"].astype(str) == str(sku_api))
+
+                            if mask_product.any():
+                                self.fbs_df.loc[mask_product, "Цена"] = clean_price
+                                if debug_info:
+                                    logging.info(f"Обновлена цена для {str_posting} / SKU {sku_api}: {clean_price}")
+
+                except Exception as e:
+                    self.show_log(f"❌ Ошибка обработки данных для {posting_number}: {e}", is_error=True)
+
+            self.update_table()
+            self.save_data_to_context()
+            self.show_log(f"✅ Статусы и цены обновлены для {len(status_response)} отправлений.")
+
+        except Exception as e:
+            self.show_log(f"❌ Непредвиденная ошибка обновления: {e}", is_error=True)
+
+    def update_orders_statuses_from_api_old(self):
         """
         Получает и обновляет статусы и заказы из API Ozon.
         """
@@ -1633,11 +2078,12 @@ class FBSModeOzon(ctk.CTkFrame):
                 posting_number = item.get('posting_number')
                 new_order_number = item.get('order_id')
                 new_status = item.get('status')
+
                 # Проверка обязательных полей для поиска и обновления
                 if not posting_number or not new_status:
                     self.show_log(
                         f"❌ Не найдены обязательные поля для обновления. Posting: {posting_number}, Status: {new_status}", is_error=True)
-                    return
+                    continue
 
                 try:
                     # 2. Создание булевой маски для поиска нужных строк
@@ -1656,6 +2102,8 @@ class FBSModeOzon(ctk.CTkFrame):
 
                     # Обновляем "Статус заказа" (status)
                     self.fbs_df.loc[mask, "Статус заказа"] = new_status
+
+
                     if debug_info:
                         self.show_log(
                             f"✅ Статус отправления {posting_number} обновлен: "
@@ -1668,6 +2116,7 @@ class FBSModeOzon(ctk.CTkFrame):
                 except Exception as e:
                     self.show_log(f"❌ Непредвиденная ошибка при обновлении статуса в DataFrame: {e}", is_error=True)
             self.update_table()
+            self.save_data_to_context()
 
         except Exception as e:
             self.show_log(f"❌ Непредвиденная ошибка: {e}", is_error=True)
@@ -1681,7 +2130,10 @@ class FBSModeOzon(ctk.CTkFrame):
         # Это обеспечивает корректный входной DataFrame для EditableDataTable.
         # Используем существующий self.columns, который вы определили ранее.
         display_df = df[self.columns].copy()
-        # display_df = df.copy()
+        display_df = display_df.sort_values(
+            by=["is_express", "Статус обработки"],
+            ascending=[False, True]
+        )
         # 2. Вызываем метод обновления данных в EditableDataTable
         self.data_table.update_data(display_df)
 
@@ -1750,6 +2202,15 @@ class FBSModeOzon(ctk.CTkFrame):
 
     def get_row_status(self, row):
         """Определяет статус строки для цветовой индикации"""
+        is_express = row.get("is_express", False)
+        status_fbs = row["Статус обработки"]
+
+        # ПРИОРИТЕТ 1: Express заказы
+        if is_express:
+            if status_fbs == self.assembly_status[1]:  # Если "Обработан"
+                return "express_collected"  # Оранжево-коричневый
+            return "express"  # Ярко-оранжевый
+
         # Если товар обработан - зеленый (независимо от наличия маркировки)
         if row["Статус обработки"] == self.assembly_status[1]:  # "Обработан"
             return "collected order"  # Зеленый цвет для обработанных заказов

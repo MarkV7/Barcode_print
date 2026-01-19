@@ -43,7 +43,7 @@ class WildberriesFBSAPI:
         date_from = current_time - (days_back * 86400)
         # Основное тело запроса
         data = {
-            "limit": 100,
+            "limit": 200,
             "next": 0,
             "dateFrom": date_from,
             "dateTo": date_to,

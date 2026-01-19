@@ -131,6 +131,32 @@ class OzonFBSAPI:
         response = self._request("POST", path, data=data)
         return response
 
+    def get_order_transaction_info(self, posting_number: str, days_back: int = 30) -> Dict[str, Any]:
+        """
+        Получает финансовую информацию по конкретному отправлению через список транзакций.
+        Позволяет узнать цену, за которую покупатель фактически приобрел товар.
+        """
+        path = "v3/finance/transaction/list"
+
+        # Определяем временной интервал для поиска транзакций
+        to_date = datetime.now(timezone.utc)
+        from_date = to_date - timedelta(days=days_back)
+
+        data = {
+            "filter": {
+                "date": {
+                    "from": from_date.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                    "to": to_date.strftime('%Y-%m-%dT%H:%M:%SZ')
+                },
+                "posting_number": posting_number,
+                "transaction_type": "all"
+            },
+            "page": 1,
+            "page_size": 100
+        }
+
+        return self._request("POST", path, data=data)
+
     def set_status_to_assembly(self, posting_number: str, products: Optional[List[Dict]] = None) -> Dict:
         """
         Переводит отправление в статус "awaiting_deliver" (Собрано/В сборке).
