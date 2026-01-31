@@ -10,3 +10,5 @@ dotenv
 easygui
 openpyxl
 PyMuPDF
+sqlalchemy
+

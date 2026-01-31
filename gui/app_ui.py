@@ -101,8 +101,8 @@ class AppUI:
         # Текущий экран
         self.current_frame = None
 
-        # Теперь можно безопасно вызвать show_database()
-        self.show_database()
+        # Вместо self.show_database() теперь вызываем приветственный экран
+        self.show_welcome_screen()
 
     def _setup_logger(self):
         """Настраивает логирование: удаляет дубли, ставит UTF-8 и глушит мусор."""
@@ -134,6 +134,74 @@ class AppUI:
         logging.getLogger('Image').setLevel(logging.WARNING)
         logging.getLogger('urllib3').setLevel(logging.WARNING)
         logging.getLogger('fitz').setLevel(logging.WARNING)
+
+    def show_welcome_screen(self):
+        """Отрисовка приветственного экрана с быстрыми кнопками"""
+        # 1. Очищаем контент-фрейм (используем правильное имя self.content_frame)
+        self._clear_content() #
+
+        # 2. Создаем центральный контейнер для текста и кнопок
+        welcome_container = ctk.CTkFrame(self.content_frame, fg_color="transparent")
+        welcome_container.place(relx=0.5, rely=0.45, anchor="center")
+
+        # 3. Заголовок
+        title_label = ctk.CTkLabel(
+            welcome_container,
+            text="Рабочее место оператора",
+            font=ctk.CTkFont(size=42, weight="bold")
+        )
+        title_label.pack(pady=(0, 10))
+
+        # 4. Подзаголовок
+        subtitle_label = ctk.CTkLabel(
+            welcome_container,
+            text="Интегрированная система обработки заказов: Ozon & Wildberries",
+            font=ctk.CTkFont(size=20),
+            text_color="gray60"
+        )
+        subtitle_label.pack(pady=(0, 60))
+
+        # 5. Контейнер для больших кнопок
+        button_frame = ctk.CTkFrame(welcome_container, fg_color="transparent")
+        button_frame.pack()
+
+        # Кнопка Ozon FBS
+        ozon_btn = ctk.CTkButton(
+            button_frame,
+            text="Ozon ФБС",
+            width=280,
+            height=140,
+            font=ctk.CTkFont(size=22, weight="bold"),
+            corner_radius=15,
+            # Используем индекс 6 (соответствует Ozon ФБС в вашем списке btn_data)
+            command=lambda: self.set_active_and_show(self.show_ozon_fbs, 6)
+        )
+        ozon_btn.grid(row=0, column=0, padx=25)
+
+        # Кнопка Wildberries FBS
+        wb_btn = ctk.CTkButton(
+            button_frame,
+            text="Wildberries ФБС",
+            width=280,
+            height=140,
+            font=ctk.CTkFont(size=22, weight="bold"),
+            corner_radius=15,
+            fg_color="#7B1FA2",      # Фиолетовый WB
+            hover_color="#6A1B9A",
+            # Используем индекс 5 (соответствует Wildberries ФБС в вашем списке btn_data)
+            command=lambda: self.set_active_and_show(self.show_wildberries_fbs, 5)
+        )
+        wb_btn.grid(row=0, column=1, padx=25)
+
+        # 6. Подсказка внизу
+        hint_label = ctk.CTkLabel(
+            welcome_container,
+            text="Выберите сервис для начала работы или воспользуйтесь боковым меню",
+            font=ctk.CTkFont(size=15, slant="italic"),
+            text_color="gray50"
+        )
+        hint_label.pack(pady=(50, 0))
+
     def save_config(self):
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump({"last_excel_path": self.context.file_path},

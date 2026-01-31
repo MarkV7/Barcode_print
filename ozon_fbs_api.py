@@ -131,6 +131,29 @@ class OzonFBSAPI:
         response = self._request("POST", path, data=data)
         return response
 
+    def get_unfulfilled_orders(self, days_back: int = 10) -> Dict:
+        """
+        Получает ВСЕ активные заказы (в сборке, ожидают отгрузки, арбитраж).
+        Идеально подходит для Express, чтобы не терять заказы.
+        """
+        path = "v3/posting/fbs/unfulfilled/list"
+        date_from = (datetime.now(timezone.utc) - timedelta(days=days_back)).isoformat().replace('+00:00', 'Z')
+
+        data = {
+            "dir": "ASC",
+            "filter": {
+                "cutoff_from": date_from  # Фильтр по времени окончания сборки
+            },
+            "limit": 100,
+            "offset": 0,
+            "with": {
+                "analytics_data": True,
+                "barcodes": True,
+                "financial_data": True
+            }
+        }
+        return self._request("POST", path, data=data)
+
     def get_order_transaction_info(self, posting_number: str, days_back: int = 30) -> Dict[str, Any]:
         """
         Получает финансовую информацию по конкретному отправлению через список транзакций.
