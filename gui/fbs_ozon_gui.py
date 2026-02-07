@@ -1358,9 +1358,15 @@ class FBSModeOzon(ctk.CTkFrame):
     def load_active_orders(self):
         """Загрузка всех невыполненных (активных) заказов через эндпоинт unfulfilled"""
         self.show_log("Ozon API: Запрос всех активных (unfulfilled) заказов...")
-
+        target_db_columns = [
+            'Штрихкод OZON',
+            'Артикул производителя',
+            'Размер',
+            'Штрихкод производителя',
+            'Бренд',
+            'SKU OZON']
         try:
-            # Вызываем метод, который вы добавили в ozon_fbs_api.py
+            # Вызываем метод, который  в ozon_fbs_api.py
             response = self.api.get_unfulfilled_orders()
 
             if not response or 'result' not in response:
@@ -1463,55 +1469,47 @@ class FBSModeOzon(ctk.CTkFrame):
             # Берем те, которых НЕТ в существующем списке
             if not new_orders_df_clean.empty:
                 # =================================================================
-                # ШАГ 2: Из self.app_context.df по sku Ozon подтягиваем детали товара
+                # ШАГ 2: # --- МЕРЖ 2: ПОЛУЧЕНИЕ ДАННЫХ ИЗ БД SQLite ---
                 # =================================================================
-                if self.app_context.df is not None and not self.app_context.df.empty:
-                    self.show_log("Начинаем МЕРЖ 2: Получение деталей товара из self.app_context.df.")
+                # 1. Берем список SKU из новых заказов
+                sku_list = new_orders_df_clean['sku'].unique().tolist()
+                # 2. Запрашиваем из БД только нужные строки (мини-справочник)
+                product_details_map = self.db.get_products_by_skus(sku_list)
+                if not product_details_map.empty:
+                    self.show_log("Начинаем МЕРЖ 2: Получение деталей товара из БД таблицы product_barcodes")
+                    product_details_map = product_details_map[target_db_columns]
+                    product_details_map = product_details_map.dropna(subset=['SKU OZON'])
+                    product_details_map = product_details_map.rename(columns={'Штрихкод производителя': 'Штрихкод'})
+                    product_details_map = product_details_map.rename(columns={'Штрихкод OZON': 'Штрихкод Ozon'})
+                    # 2.2. Очистка lookup-таблицы (убираем дубликаты по ключу)
+                    self.show_log("2.2. Очистка lookup-таблицы (убираем дубликаты по ключу)")
 
-                    # Проверяем, что поле 'Штрихкод Ozon' существует после первого мерджа
-                    if 'sku' in new_orders_df_clean.columns:
-                        # 2.1. Создаем таблицу для поиска:
-                        self.show_log("2.1. Создаем таблицу для поиска:")
-                        product_details_map = self.app_context.df[[
-                            'Штрихкод OZON',  # Ключ для соединения
-                            'Артикул производителя',
-                            'Размер',
-                            'Штрихкод производителя',  # Штрихкод производителя/внутренний
-                            'Бренд',
-                            'SKU OZON'
-                        ]].copy()
-                        product_details_map = product_details_map.dropna(subset=['SKU OZON'])
-                        product_details_map = product_details_map.rename(columns={'Штрихкод производителя': 'Штрихкод'})
-                        product_details_map = product_details_map.rename(columns={'Штрихкод OZON': 'Штрихкод Ozon'})
-                        # 2.2. Очистка lookup-таблицы (убираем дубликаты по ключу)
-                        self.show_log("2.2. Очистка lookup-таблицы (убираем дубликаты по ключу)")
+                    product_details_map.drop_duplicates(subset=['SKU OZON'], keep='first',
+                                                        inplace=True)
+                    product_details_map = product_details_map.reset_index(drop=True)
 
-                        product_details_map.drop_duplicates(subset=['SKU OZON'], keep='first',
-                                                            inplace=True)
-                        product_details_map = product_details_map.reset_index(drop=True)
+                    # 2.3. Приводим ключи к строковому типу
+                    product_details_map['SKU OZON'] = product_details_map['SKU OZON'].astype(
+                        str).str.strip()
+                    new_orders_df_clean['sku'] = new_orders_df_clean['sku'].astype(
+                        str).str.strip()
 
-                        # 2.3. Приводим ключи к строковому типу
-                        product_details_map['SKU OZON'] = product_details_map['SKU OZON'].astype(
-                            str).str.strip()
-                        new_orders_df_clean['sku'] = new_orders_df_clean['sku'].astype(
-                            str).str.strip()
-
-                        self.show_log("2.4. Выполняем LEFT MERGE")
-                        # 2.4. Выполняем LEFT MERGE
-                        new_orders_df_clean = new_orders_df_clean.merge(
-                            product_details_map,
-                            left_on='sku',
-                            right_on='SKU OZON',
-                            how='left'
-                        )
-                        self.show_log("2.5. Удаляем дублирующую колонку-ключ ('SKU OZON' из базы)")
-                        # 2.5. Удаляем дублирующую колонку-ключ ('SKU OZON' из базы)
-                        new_orders_df_clean.drop(columns=['SKU OZON'], errors='ignore', inplace=True)
-                        # устанавливаем поле-список для кода маркировки, предполагает множественное значение
-                        # в дальнейшем подтянуть заполнение из отдельной таблицы !!!
-                        new_orders_df_clean['Код маркировки'] = [[] for _ in range(len(new_orders_df_clean))]
-                        # Создаём датафрейм с правильными колонками, заполняя отсутствующие ''
-                        new_orders_df_clean = new_orders_df_clean.reindex(columns=self.fbs_df.columns, fill_value='')
+                    self.show_log("2.4. Выполняем LEFT MERGE")
+                    # 2.4. Выполняем LEFT MERGE
+                    new_orders_df_clean = new_orders_df_clean.merge(
+                        product_details_map,
+                        left_on='sku',
+                        right_on='SKU OZON',
+                        how='left'
+                    )
+                    self.show_log("2.5. Удаляем дублирующую колонку-ключ ('SKU OZON' из базы)")
+                    # 2.5. Удаляем дублирующую колонку-ключ ('SKU OZON' из базы)
+                    new_orders_df_clean.drop(columns=['SKU OZON'], errors='ignore', inplace=True)
+                    # устанавливаем поле-список для кода маркировки, предполагает множественное значение
+                    # в дальнейшем подтянуть заполнение из отдельной таблицы !!!
+                    new_orders_df_clean['Код маркировки'] = [[] for _ in range(len(new_orders_df_clean))]
+                    # Создаём датафрейм с правильными колонками, заполняя отсутствующие ''
+                    new_orders_df_clean = new_orders_df_clean.reindex(columns=self.fbs_df.columns, fill_value='')
 
                 else:
                     self.show_log("Основной справочник товаров (Штрихкод Ozon) пуст. Нет возможности получить Штрихкод")
@@ -1552,7 +1550,14 @@ class FBSModeOzon(ctk.CTkFrame):
         # except Exception as e:
         #     self.show_log(f"❌ Ошибка загрузки справочника SKU: {e}", is_error=True)
         #     return
-
+        # 1. Определяем, какие поля нам нужны из справочника БД
+        target_db_columns = [
+            'Штрихкод OZON',
+            'Артикул производителя',
+            'Размер',
+            'Штрихкод производителя',
+            'Бренд',
+            'SKU OZON' ]
         try:
             self.show_log("OZON API: Запрос новых сборочных заданий...")
             json_data = self.api.get_orders()
@@ -1682,59 +1687,52 @@ class FBSModeOzon(ctk.CTkFrame):
 
             if not new_orders_df_clean.empty:
                 # =================================================================
-                # ШАГ 2: Из self.app_context.df по sku Ozon подтягиваем детали товара
+                # ШАГ 2: Из self.app_context.df по sku Ozon подтягиваем детали товара --- меняем блок на подтягивание из БД !!!
                 # =================================================================
-                if self.app_context.df is not None and not self.app_context.df.empty:
-                    self.show_log("Начинаем МЕРЖ 2: Получение деталей товара из self.app_context.df.")
 
-                    # Проверяем, что поле 'Штрихкод Ozon' существует после первого мерджа
-                    if 'sku' in new_orders_df_clean.columns:
-                        # 2.1. Создаем таблицу для поиска:
-                        self.show_log("2.1. Создаем таблицу для поиска:")
-                        product_details_map = self.app_context.df[[
-                            'Штрихкод OZON',  # Ключ для соединения
-                            'Артикул производителя',
-                            'Размер',
-                            'Штрихкод производителя',  # Штрихкод производителя/внутренний
-                            'Бренд',
-                            'SKU OZON'
-                        ]].copy()
-                        product_details_map = product_details_map.dropna(subset=['SKU OZON'])
-                        product_details_map = product_details_map.rename(columns={'Штрихкод производителя':'Штрихкод'})
-                        product_details_map = product_details_map.rename(columns={'Штрихкод OZON': 'Штрихкод Ozon'})
-                        # 2.2. Очистка lookup-таблицы (убираем дубликаты по ключу)
-                        self.show_log("2.2. Очистка lookup-таблицы (убираем дубликаты по ключу)")
+                # 1. Берем список SKU из новых заказов
+                sku_list = new_orders_df_clean['sku'].unique().tolist()
+                # 2. Запрашиваем из БД только нужные строки (мини-справочник)
+                product_details_map = self.db.get_products_by_skus(sku_list)
+                if not product_details_map.empty:
+                    self.show_log("Начинаем МЕРЖ 2: Получение деталей товара из БД таблицы product_barcodes")
+                    product_details_map = product_details_map[target_db_columns]
+                    product_details_map = product_details_map.dropna(subset=['SKU OZON'])
+                    product_details_map = product_details_map.rename(columns={'Штрихкод производителя':'Штрихкод'})
+                    product_details_map = product_details_map.rename(columns={'Штрихкод OZON': 'Штрихкод Ozon'})
+                    # 2.2. Очистка lookup-таблицы (убираем дубликаты по ключу)
+                    self.show_log("2.2. Очистка lookup-таблицы (убираем дубликаты по ключу)")
 
-                        product_details_map.drop_duplicates(subset=['SKU OZON'], keep='first',
-                                                            inplace=True)
-                        product_details_map = product_details_map.reset_index(drop=True)
+                    product_details_map.drop_duplicates(subset=['SKU OZON'], keep='first',
+                                                        inplace=True)
+                    product_details_map = product_details_map.reset_index(drop=True)
 
-                        # 2.3. Приводим ключи к строковому типу
-                        product_details_map['SKU OZON'] = product_details_map['SKU OZON'].astype(
-                            str).str.strip()
-                        new_orders_df_clean['sku'] = new_orders_df_clean['sku'].astype(
-                            str).str.strip()
+                    # 2.3. Приводим ключи к строковому типу
+                    product_details_map['SKU OZON'] = product_details_map['SKU OZON'].astype(
+                        str).str.strip()
+                    new_orders_df_clean['sku'] = new_orders_df_clean['sku'].astype(
+                        str).str.strip()
 
-                        self.show_log("2.4. Выполняем LEFT MERGE")
-                        # 2.4. Выполняем LEFT MERGE
-                        new_orders_df_clean = new_orders_df_clean.merge(
-                            product_details_map,
-                            left_on='sku',
-                            right_on='SKU OZON',
-                            how='left'
-                        )
-                        self.show_log("2.5. Удаляем дублирующую колонку-ключ ('SKU OZON' из базы)")
-                        # 2.5. Удаляем дублирующую колонку-ключ ('SKU OZON' из базы)
-                        new_orders_df_clean.drop(columns=['SKU OZON'], errors='ignore', inplace=True)
-                        # устанавливаем поле-список для кода маркировки, предполагает множественное значение
-                        # в дальнейшем подтянуть заполнение из отдельной таблицы !!!
-                        new_orders_df_clean['Код маркировки'] = [[] for _ in range(len(new_orders_df_clean))]
-                        # Создаём датафрейм с правильными колонками, заполняя отсутствующие ''
-                        new_orders_df_clean = new_orders_df_clean.reindex(columns=self.fbs_df.columns, fill_value='')
+                    self.show_log("2.4. Выполняем LEFT MERGE")
+                    # 2.4. Выполняем LEFT MERGE
+                    new_orders_df_clean = new_orders_df_clean.merge(
+                        product_details_map,
+                        left_on='sku',
+                        right_on='SKU OZON',
+                        how='left'
+                    )
+                    self.show_log("2.5. Удаляем дублирующую колонку-ключ ('SKU OZON' из базы)")
+                    # 2.5. Удаляем дублирующую колонку-ключ ('SKU OZON' из базы)
+                    new_orders_df_clean.drop(columns=['SKU OZON'], errors='ignore', inplace=True)
+                    # устанавливаем поле-список для кода маркировки, предполагает множественное значение
+                    # в дальнейшем подтянуть заполнение из отдельной таблицы !!!
+                    new_orders_df_clean['Код маркировки'] = [[] for _ in range(len(new_orders_df_clean))]
+                    # Создаём датафрейм с правильными колонками, заполняя отсутствующие ''
+                    new_orders_df_clean = new_orders_df_clean.reindex(columns=self.fbs_df.columns, fill_value='')
 
                 else:
                     self.show_log("Основной справочник товаров (Штрихкод Ozon) пуст. Нет возможности получить Штрихкод")
-                    return
+                    # return
 
                 # Используем fillna('') для всего DataFrame или точечно
                 new_orders_df_clean = new_orders_df_clean.fillna('')
@@ -2325,20 +2323,8 @@ class FBSModeOzon(ctk.CTkFrame):
         """Обновляет содержимое таблицы и применяет цветовую индикацию."""
         if df is None:
             df = self.fbs_df
-
-        # 1. Выбираем только те колонки, которые должны быть в таблице (self.columns - 13 шт.)
-        # Это обеспечивает корректный входной DataFrame для EditableDataTable.
-        # Используем существующий self.columns, который вы определили ранее.
         display_df = df[self.columns].copy()
-        # display_df = display_df.sort_values(
-        #     by=["is_express", "Статус обработки"],
-        #     ascending=[False, True]
-        # )
-        # 2. Вызываем метод обновления данных в EditableDataTable
         self.data_table.update_data(display_df)
-
-        # 3. Восстановление расцветки сразу после обновления данных.
-        # Этот метод должен быть добавлен в класс FBSModeWB (см. ниже).
         self.apply_row_coloring()
 
     def show_log(self, message: str, is_error: bool = False):
@@ -2430,18 +2416,18 @@ class FBSModeOzon(ctk.CTkFrame):
         if row["Штрихкод"] != "":
             return "found"  # Желтый цвет для найденных штрих кодов
 
-        # Проверяем наличие в основной базе данных
-        if self.app_context.df is not None:
-            matches = self.app_context.df[
-                (self.app_context.df["Артикул производителя"].astype(str) == str(row["Артикул поставщика"])) &
-                (self.app_context.df["Размер"].astype(str) == str(row["Размер"]))
-                ]
-            if not matches.empty:
-                return "found"
-
-        # Проверяем в локальной базе
-        key = f"{row['Артикул поставщика']}_{row['Размер']}"
-        if key in self.ozon_marking_db:
-            return "found"
+        # # Проверяем наличие в основной базе данных
+        # if self.app_context.df is not None:
+        #     matches = self.app_context.df[
+        #         (self.app_context.df["Артикул производителя"].astype(str) == str(row["Артикул поставщика"])) &
+        #         (self.app_context.df["Размер"].astype(str) == str(row["Размер"]))
+        #         ]
+        #     if not matches.empty:
+        #         return "found"
+        #
+        # # Проверяем в локальной базе
+        # key = f"{row['Артикул поставщика']}_{row['Размер']}"
+        # if key in self.ozon_marking_db:
+        #     return "found"
 
         return "missing"

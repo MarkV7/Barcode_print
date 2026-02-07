@@ -223,3 +223,145 @@ class DBManager:
         except Exception as e:
             logging.error(f"DB Error (get_product): {e}")
             return None
+
+    def update_fbs_order_status(self, table_name: str, key_col: str, key_value: str, status_processing: str,
+                                marking_code: str = ""):
+        """Обновление статуса обработки и кода маркировки в таблицах заказов"""
+        sql = text(f"""
+            UPDATE {table_name}
+            SET "Статус обработки" = :status,
+                "Код маркировки" = :marking,
+                "Время обновления" = CURRENT_TIMESTAMP
+            WHERE "{key_col}" = :id
+        """)
+        try:
+            with self.engine.begin() as conn:
+                conn.execute(sql, {
+                    "status": status_processing,
+                    "marking": marking_code,
+                    "id": key_value
+                })
+        except Exception as e:
+            logging.error(f"Ошибка обновления строки в {table_name}: {e}")
+
+    def get_products_by_articles(self, articles: list, columns: list = None) -> pd.DataFrame:
+        """
+        Выбирает данные из БД только для указанных артикулов и только нужные колонки.
+        """
+        if not articles:
+            return pd.DataFrame()
+
+        # 1. Формируем список колонок
+        cols_str = ", ".join([f'"{col}"' for col in columns]) if columns else "*"
+
+        # 2. Создаем словарь параметров: {"a0": "арт1", "a1": "арт2", ...}
+        # Это удовлетворяет требованию PyCharm к типу Mapping
+        params = {f"a{i}": str(art) for i, art in enumerate(articles)}
+
+        # 3. Формируем плейсхолдеры для SQL: (:a0, :a1, :a2...)
+        placeholders = ", ".join([f":a{i}" for i in range(len(articles))])
+        sql = f'SELECT {cols_str} FROM product_barcodes WHERE "Артикул производителя" IN ({placeholders})'
+
+        try:
+            return pd.read_sql_query(text(sql), self.engine, params=params)
+        except Exception as e:
+            logging.error(f"Ошибка при получении данных из БД: {e}")
+            return pd.DataFrame()
+
+    def get_products_by_skus(self, skus: list) -> pd.DataFrame:
+        """
+        Получает данные по списку SKU.
+        Если список пуст или ничего не найдено, возвращает пустой DF со всеми колонками таблицы.
+        """
+        # Сначала получаем структуру таблицы (пустой DF с колонками)
+        empty_df = pd.read_sql_query('SELECT * FROM product_barcodes LIMIT 0', self.engine)
+
+        if not skus:
+            return empty_df
+
+        # Защита: превращаем всё в строки и убираем None
+        skus = [str(s) for s in skus if s is not None]
+
+        # Используем именованные параметры для безопасности
+        params = {f"s{i}": s for i, s in enumerate(skus)}
+        placeholders = ", ".join([f":s{i}" for i in range(len(skus))])
+
+        sql = f'SELECT * FROM product_barcodes WHERE "SKU OZON" IN ({placeholders})'
+
+        try:
+            with self.engine.connect() as conn:
+                res = pd.read_sql_query(text(sql), conn, params=params)
+                # Если результат пустой, возвращаем структуру с колонками
+                return res if not res.empty else empty_df
+        except Exception as e:
+            logging.error(f"Ошибка получения по SKU: {e}")
+            return empty_df
+
+    def get_products_by_wb_barcodes(self, barcodes: list) -> pd.DataFrame:
+        """
+        Получает данные по списку Баркодов WB.
+        Возвращает пустую структуру таблицы, если ничего не найдено.
+        """
+        # Получаем структуру (колонки), чтобы не было KeyError в GUI
+        empty_df = pd.read_sql_query('SELECT * FROM product_barcodes LIMIT 0', self.engine)
+
+        if not barcodes:
+            return empty_df
+
+        # Чистим список
+        barcodes = [str(b) for b in barcodes if b]
+
+        # ВАЖНО: В твоем SQL-скрипте было "Баркод  Wildberries" (с двумя пробелами)
+        params = {f"b{i}": b for i, b in enumerate(barcodes)}
+        placeholders = ", ".join([f":b{i}" for i in range(len(barcodes))])
+
+        sql = f'SELECT * FROM product_barcodes WHERE "Баркод  Wildberries" IN ({placeholders})'
+
+        try:
+            with self.engine.connect() as conn:
+                res = pd.read_sql_query(text(sql), conn, params=params)
+                return res if not res.empty else empty_df
+        except Exception as e:
+            logging.error(f"Ошибка DB WB: {e}")
+            return empty_df
+
+    # Добавить в db_manager.py
+
+    def get_marking_codes_by_date_range(self, start_date: str, end_date: str) -> pd.DataFrame:
+        """Получает коды маркировки за указанный период (гггг-мм-дд)."""
+        sql = """
+            SELECT * FROM marking_codes 
+            WHERE date("Время добавления") BETWEEN :start AND :end
+        """
+        try:
+            with self.engine.connect() as conn:
+                return pd.read_sql_query(text(sql), conn, params={"start": start_date, "end": end_date})
+        except Exception as e:
+            logging.error(f"Ошибка экспорта маркировки: {e}")
+            return pd.DataFrame()
+
+    def get_all_product_barcodes(self) -> pd.DataFrame:
+        """Получает всю таблицу штрихкодов."""
+        try:
+            return pd.read_sql_query('SELECT * FROM product_barcodes', self.engine)
+        except Exception as e:
+            logging.error(f"Ошибка экспорта штрихкодов: {e}")
+            return pd.DataFrame()
+
+    def import_product_barcodes(self, df: pd.DataFrame):
+        """Массово обновляет или вставляет штрихкоды из DataFrame."""
+        try:
+            with self.engine.begin() as conn:
+                # Используем to_sql с методом multi для ускорения,
+                # но для OR REPLACE проще пройтись циклом или использовать временную таблицу.
+                # Для надежности используем построчную вставку:
+                for _, row in df.iterrows():
+                    data = row.to_dict()
+                    columns = ", ".join([f'"{k}"' for k in data.keys()])
+                    placeholders = ", ".join([":" + k for k in data.keys()])
+                    sql = f'INSERT OR REPLACE INTO product_barcodes ({columns}) VALUES ({placeholders})'
+                    conn.execute(text(sql), data)
+            return True, len(df)
+        except Exception as e:
+            logging.error(f"Ошибка импорта: {e}")
+            return False, str(e)

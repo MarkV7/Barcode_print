@@ -11,9 +11,10 @@ from gui.database_gui import DatabaseMode
 from gui.return_sklad_gui import ReturnMode
 from gui.ozon_gui import OzonMode
 from gui.wb_gui import WildberriesMode
-from gui.fbs_autosborka_gui import FBSMode
+from db_manager import DBManager
 from gui.fbs_wb_gui import FBSModeWB
 from gui.fbs_ozon_gui import FBSModeOzon
+from gui.reports_gui import ReportsMode
 import base64
 import logging
 
@@ -32,7 +33,7 @@ class AppUI:
         self.root.geometry("1700x800")
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
-
+        self.db_manager = DBManager()
         # Контекст — центральное хранилище данных
         self.context = AppContext()
         self.context.load_from_file(CONTEXT_FILE)
@@ -69,10 +70,10 @@ class AppUI:
             ("Возврат на склад", self.show_return),
             ("ФБО Ozon", self.show_ozon),
             ("ФБО Wildberries", self.show_wildberries),
-            # ("Автосборка ФБС", self.show_autosborka_fbs),
             ("Wildberries ФБС", self.show_wildberries_fbs),
             ("Ozon ФБС", self.show_ozon_fbs),
             ("Настройки", self.show_settings),
+            ("Отчеты", self.show_reports_page),
             ("Выход", self.on_close),
         ]
 
@@ -339,13 +340,13 @@ class AppUI:
         frame.pack(fill="both", expand=True)
         self.current_frame = frame
 
-    def show_autosborka_fbs(self):
-        self._clear_content()
-        frame = FBSMode(
-            self.content_frame, self.font_normal, self.context
-        )
-        frame.pack(fill="both", expand=True)
-        self.current_frame = frame
+    # def show_autosborka_fbs(self):
+    #     self._clear_content()
+    #     frame = FBSMode(
+    #         self.content_frame, self.font_normal, self.context
+    #     )
+    #     frame.pack(fill="both", expand=True)
+    #     self.current_frame = frame
 
     def show_wildberries_fbs(self):
         self._clear_content()
@@ -367,6 +368,14 @@ class AppUI:
         self._clear_content()
         frame = SettingsMode(self.content_frame,
                              self.font_normal, self.context)
+        frame.pack(fill="both", expand=True)
+        self.current_frame = frame
+
+    # Метод переключения
+    def show_reports_page(self):
+        self._clear_content()
+        frame = ReportsMode(self.content_frame,
+                             self.font_normal, self.db_manager)
         frame.pack(fill="both", expand=True)
         self.current_frame = frame
 

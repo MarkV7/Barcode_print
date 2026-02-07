@@ -548,102 +548,102 @@ class FBSModeWB(ctk.CTkFrame):
         check_digit = (10 - (total % 10)) % 10
         return check_digit == digits[12]
 
-    def load_orders(self):
-        """Загружает заказы из Excel"""
-
-        file_path = fd.askopenfilename(filetypes=[("Excel files", "*.xlsx *.xls")])
-        if not file_path:
-            return
-
-        try:
-            df_unload = pd.read_excel(file_path)
-            required_columns = [
-                "Номер заказа", "Служба доставки", "Бренд", "Цена",
-                "Статус", "Артикул поставщика", "Количество", "Размер"
-            ]
-            missing_cols = [col for col in required_columns if col not in df_unload.columns]
-            if missing_cols:
-                self.show_log(f"Ошибка: Отсутствуют столбцы: {', '.join(missing_cols)}", is_error=True)
-                return
-            # проверка полек  "Служба доставки" == Wildberries
-            # 2. Фильтрация по Wildberries
-            filtered_df = df_unload[df_unload['Служба доставки'].astype(str).str.contains(self.marketplace, na=False)].copy()
-            filtered_df["Статус заказа"] = filtered_df["Статус"].replace({'': self.define_status[0], 'Новый': self.define_status[1]})
-            filtered_df["Статус обработки"] = self.assembly_status[0]
-
-            #    Мы используем reindex, чтобы гарантировать, что все строки имеют нужные колонки
-            if not filtered_df.empty:
-                # Берем только существующие колонки из self.columns
-                existing_cols_in_filtered_df = [col for col in self.columns if col in filtered_df.columns]
-
-                # Создаем временный DF, который будет содержать данные только по существующим колонкам
-                temp_df = filtered_df[existing_cols_in_filtered_df].copy()
-
-                # Добавляем все недостающие колонки и выравниваем индекс
-                temp_df = temp_df.reindex(columns=self.columns)
-
-                # 💡 ИСПРАВЛЕНИЕ WARNING 1: Приводим все колонки к строковому типу перед заполнением
-                # Это позволяет безопасно хранить строки и NaN, устраняя FutureWarning.
-                for col in temp_df.columns:
-                    temp_df[col] = temp_df[col].astype(object)
-                # Pandas по умолчанию заполняет новые колонки NaN. Заменяем NaN на пустые строки
-                temp_df.fillna('', inplace=True)
-
-
-            # Разбиваем каждую запись на количество
-            expanded_rows = []
-            for _, row in temp_df.iterrows():
-                count = int(row["Количество"])
-                for _ in range(count):
-                    new_row = row.to_dict()
-                    new_row["Количество"] = 1
-                    expanded_rows.append(new_row)
-
-            new_df = pd.DataFrame(expanded_rows)
-
-            # # Добавляем внутренние поля
-            # new_df["Штрихкод"] = ""
-            # new_df["Код маркировки"] = ""
-            # new_df["Номер поставки"] = ""
-            # new_df["Статус обработки"] = "new"
-
-            # Автоматически заполняем штрихкоды из основной базы данных
-            if self.app_context.df is not None:
-                for idx, row in new_df.iterrows():
-                    # Ищем по артикулу и размеру в основной базе
-                    matches = self.app_context.df[
-                        (self.app_context.df["Артикул производителя"].astype(str) == str(row["Артикул поставщика"])) &
-                        (self.app_context.df["Размер"].astype(str) == str(row["Размер"]))
-                        ]
-                    if not matches.empty:
-                        # Берем первый найденный штрихкод
-                        barcode = matches.iloc[0]["Штрихкод производителя"]
-                        if pd.notna(barcode) and str(barcode).strip() != "":
-                            new_df.at[idx, "Штрихкод"] = str(barcode)
-                            # Также добавляем в локальную базу
-                            key = f"{row['Артикул поставщика']}_{row['Размер']}"
-                            self.marking_db[key] = str(barcode)
-
-            # Удаляем дубли по "Номер заказа"
-            if not self.fbs_df.empty:
-                existing_orders = set(self.fbs_df["Номер заказа"].unique())
-                new_df = new_df[~new_df["Номер заказа"].isin(existing_orders)]
-
-            # Объединяем с текущими данными
-            if self.fbs_df.empty:
-                self.fbs_df = new_df
-            else:
-                self.fbs_df = pd.concat([self.fbs_df, new_df], ignore_index=True)
-
-            # Сохраняем в контекст
-            self.save_data_to_context()
-
-            # Обновляем таблицу
-            self.update_table()
-
-            self.show_log(f"Загружено {len(new_df)} новых заказов.")
-        except Exception as e:
-            self.show_log(f"Ошибка при загрузке файла: {str(e)}", is_error=True)
+    # def load_orders(self):
+    #     """Загружает заказы из Excel"""
+    #
+    #     file_path = fd.askopenfilename(filetypes=[("Excel files", "*.xlsx *.xls")])
+    #     if not file_path:
+    #         return
+    #
+    #     try:
+    #         df_unload = pd.read_excel(file_path)
+    #         required_columns = [
+    #             "Номер заказа", "Служба доставки", "Бренд", "Цена",
+    #             "Статус", "Артикул поставщика", "Количество", "Размер"
+    #         ]
+    #         missing_cols = [col for col in required_columns if col not in df_unload.columns]
+    #         if missing_cols:
+    #             self.show_log(f"Ошибка: Отсутствуют столбцы: {', '.join(missing_cols)}", is_error=True)
+    #             return
+    #         # проверка полек  "Служба доставки" == Wildberries
+    #         # 2. Фильтрация по Wildberries
+    #         filtered_df = df_unload[df_unload['Служба доставки'].astype(str).str.contains(self.marketplace, na=False)].copy()
+    #         filtered_df["Статус заказа"] = filtered_df["Статус"].replace({'': self.define_status[0], 'Новый': self.define_status[1]})
+    #         filtered_df["Статус обработки"] = self.assembly_status[0]
+    #
+    #         #    Мы используем reindex, чтобы гарантировать, что все строки имеют нужные колонки
+    #         if not filtered_df.empty:
+    #             # Берем только существующие колонки из self.columns
+    #             existing_cols_in_filtered_df = [col for col in self.columns if col in filtered_df.columns]
+    #
+    #             # Создаем временный DF, который будет содержать данные только по существующим колонкам
+    #             temp_df = filtered_df[existing_cols_in_filtered_df].copy()
+    #
+    #             # Добавляем все недостающие колонки и выравниваем индекс
+    #             temp_df = temp_df.reindex(columns=self.columns)
+    #
+    #             # 💡 ИСПРАВЛЕНИЕ WARNING 1: Приводим все колонки к строковому типу перед заполнением
+    #             # Это позволяет безопасно хранить строки и NaN, устраняя FutureWarning.
+    #             for col in temp_df.columns:
+    #                 temp_df[col] = temp_df[col].astype(object)
+    #             # Pandas по умолчанию заполняет новые колонки NaN. Заменяем NaN на пустые строки
+    #             temp_df.fillna('', inplace=True)
+    #
+    #
+    #         # Разбиваем каждую запись на количество
+    #         expanded_rows = []
+    #         for _, row in temp_df.iterrows():
+    #             count = int(row["Количество"])
+    #             for _ in range(count):
+    #                 new_row = row.to_dict()
+    #                 new_row["Количество"] = 1
+    #                 expanded_rows.append(new_row)
+    #
+    #         new_df = pd.DataFrame(expanded_rows)
+    #
+    #         # # Добавляем внутренние поля
+    #         # new_df["Штрихкод"] = ""
+    #         # new_df["Код маркировки"] = ""
+    #         # new_df["Номер поставки"] = ""
+    #         # new_df["Статус обработки"] = "new"
+    #
+    #         # Автоматически заполняем штрихкоды из основной базы данных
+    #         if self.app_context.df is not None:
+    #             for idx, row in new_df.iterrows():
+    #                 # Ищем по артикулу и размеру в основной базе
+    #                 matches = self.app_context.df[
+    #                     (self.app_context.df["Артикул производителя"].astype(str) == str(row["Артикул поставщика"])) &
+    #                     (self.app_context.df["Размер"].astype(str) == str(row["Размер"]))
+    #                     ]
+    #                 if not matches.empty:
+    #                     # Берем первый найденный штрихкод
+    #                     barcode = matches.iloc[0]["Штрихкод производителя"]
+    #                     if pd.notna(barcode) and str(barcode).strip() != "":
+    #                         new_df.at[idx, "Штрихкод"] = str(barcode)
+    #                         # Также добавляем в локальную базу
+    #                         key = f"{row['Артикул поставщика']}_{row['Размер']}"
+    #                         self.marking_db[key] = str(barcode)
+    #
+    #         # Удаляем дубли по "Номер заказа"
+    #         if not self.fbs_df.empty:
+    #             existing_orders = set(self.fbs_df["Номер заказа"].unique())
+    #             new_df = new_df[~new_df["Номер заказа"].isin(existing_orders)]
+    #
+    #         # Объединяем с текущими данными
+    #         if self.fbs_df.empty:
+    #             self.fbs_df = new_df
+    #         else:
+    #             self.fbs_df = pd.concat([self.fbs_df, new_df], ignore_index=True)
+    #
+    #         # Сохраняем в контекст
+    #         self.save_data_to_context()
+    #
+    #         # Обновляем таблицу
+    #         self.update_table()
+    #
+    #         self.show_log(f"Загружено {len(new_df)} новых заказов.")
+    #     except Exception as e:
+    #         self.show_log(f"Ошибка при загрузке файла: {str(e)}", is_error=True)
 
     def checkbox_event(self):
         logging.info("Checkbox toggled, current value:", self.check_var.get())
@@ -1422,7 +1422,12 @@ class FBSModeWB(ctk.CTkFrame):
     def load_wb_orders_add(self, new_flag:bool = False):
         """Загружает новые и в работе сборочные задания WB через API."""
         debug_info = False
-
+        target_db_columns = [
+            'Баркод  Wildberries',  # Ключ для соединения
+            'Артикул производителя',
+            'Размер',
+            'Штрихкод производителя',  # Штрихкод производителя/внутренний
+            'Бренд']
         try:
             if new_flag:
                 self.show_log("WB API: Запрос новых сборочных заданий...")
@@ -1478,15 +1483,16 @@ class FBSModeWB(ctk.CTkFrame):
                     new_orders_df_clean = new_orders_df[~is_duplicate].copy()
 
                 if not new_orders_df_clean.empty:
-                    if self.app_context.df is not None and not self.app_context.df.empty:
-                        self.show_log("Начинаем МЕРЖ: Получение деталей товара из self.app_context.df.")
-                        self.show_log("2.1. Создаем таблицу для поиска:")
-                        product_details_map = self.app_context.df[[
-                            'Баркод  Wildberries',  # Ключ для соединения
-                            'Артикул производителя',
-                            'Размер',
-                            'Штрихкод производителя',  # Штрихкод производителя/внутренний
-                            'Бренд']].copy()
+                    # --- ОБОГАЩЕНИЕ ДАННЫХ ИЗ БД (ВМЕСТО app_context.df) ---
+                    logging.info("WB: Обогащение данных из БД по Баркодам")
+                    # 1. Извлекаем все баркоды из новых заказов (в WB это колонка 'Штрихкод')
+                    wb_barcodes = new_orders_df['Штрихкод WB'].unique().tolist()
+                    # 2. Тянем данные из базы
+                    product_details_map = self.db.get_products_by_wb_barcodes(wb_barcodes)
+
+                    if not product_details_map.empty:
+                        self.show_log("Начинаем МЕРЖ 2: Получение деталей товара из БД таблицы product_barcodes")
+                        product_details_map = product_details_map[target_db_columns]
                         product_details_map = product_details_map.rename(columns={'Штрихкод производителя': 'Штрихкод'})
                         product_details_map = product_details_map.rename(
                             columns={'Артикул производителя': 'Артикул поставщика'})
@@ -2214,17 +2220,17 @@ class FBSModeWB(ctk.CTkFrame):
             return "found"  # Желтый цвет для найденных штрих кодов
 
         # Проверяем наличие в основной базе данных
-        if self.app_context.df is not None:
-            matches = self.app_context.df[
-                (self.app_context.df["Артикул производителя"].astype(str) == str(row["Артикул поставщика"])) &
-                (self.app_context.df["Размер"].astype(str) == str(row["Размер"]))
-                ]
-            if not matches.empty:
-                return "found"
-
-        # Проверяем в локальной базе
-        key = f"{row['Артикул поставщика']}_{row['Размер']}"
-        if key in self.wb_marking_db:
-            return "found"
+        # if self.app_context.df is not None:
+        #     matches = self.app_context.df[
+        #         (self.app_context.df["Артикул производителя"].astype(str) == str(row["Артикул поставщика"])) &
+        #         (self.app_context.df["Размер"].astype(str) == str(row["Размер"]))
+        #         ]
+        #     if not matches.empty:
+        #         return "found"
+        #
+        # # Проверяем в локальной базе
+        # key = f"{row['Артикул поставщика']}_{row['Размер']}"
+        # if key in self.wb_marking_db:
+        #     return "found"
 
         return "missing"

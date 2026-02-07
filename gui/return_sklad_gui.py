@@ -64,15 +64,18 @@ class ReturnMode(ctk.CTkFrame):
             self.return_df = self.app_context.return_table_df.copy()
         else:
             self.return_df = pd.DataFrame(columns=["Артикул производителя", "Размер", "Кол-во", "Коробка"])
-
+        # Определяем список колонок, которые используются в логике обработки (строка 135)
+        column_names = ["Артикул", "Размер", "Штрихкод", "Код маркировки", "Статус"]
         # Таблица
         self.table = EditableDataTable(
             self.table_container,
             dataframe=self.return_df,
+            columns=column_names,
             header_font=("Segoe UI", 14, "bold"),
             cell_font=("Segoe UI", 14),
             readonly=False,
             on_edit_start=self.on_edit_start,
+            on_row_select=self.on_row_selected,
             on_edit_end=self.on_edit_end
         )
         self.table.pack(fill="both", expand=True)
@@ -81,6 +84,11 @@ class ReturnMode(ctk.CTkFrame):
         self.table.bind("<Button-1>", self.restore_entry_focus)
         for child in self.table.winfo_children():
             child.bind("<Button-1>", self.restore_entry_focus)
+
+    def on_row_selected(self, row_values=None):
+        """Обработка выбора строки в таблице"""
+        # Теперь метод может принимать данные строки напрямую
+        pass
 
     def setup_entry(self):
         """Создаёт скрытое поле ввода и привязывает события"""
