@@ -365,3 +365,15 @@ class DBManager:
         except Exception as e:
             logging.error(f"Ошибка импорта: {e}")
             return False, str(e)
+
+    def delete_product_barcode(self, vendor_code: str, size: str) -> bool:
+        """Удаляет запись из таблицы по артикулу и размеру"""
+        sql = 'DELETE FROM product_barcodes WHERE "Артикул производителя" = :vc AND "Размер" = :sz'
+        try:
+            with self.engine.connect() as conn:
+                conn.execute(text(sql), {"vc": vendor_code, "sz": size})
+                conn.commit()
+            return True
+        except Exception as e:
+            logging.error(f"Ошибка удаления записи: {e}")
+            return False

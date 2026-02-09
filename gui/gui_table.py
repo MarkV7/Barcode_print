@@ -105,6 +105,7 @@ class EditableDataTable(ctk.CTkFrame):
         self.original_df = dataframe.copy()  # Сохраняем оригинал для сравнения
         self.max_rows = max_rows if max_rows else len(dataframe)
         self.displayed_df = self.dataframe.head(self.max_rows).copy().astype(object)
+
         self.header_font = header_font or ("Segoe UI", 14, "bold")
         self.cell_font = cell_font or ("Segoe UI", 14)
         self.show_statusbar = show_statusbar

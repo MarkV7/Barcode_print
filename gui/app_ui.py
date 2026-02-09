@@ -15,6 +15,7 @@ from db_manager import DBManager
 from gui.fbs_wb_gui import FBSModeWB
 from gui.fbs_ozon_gui import FBSModeOzon
 from gui.reports_gui import ReportsMode
+from gui.db_viewer_gui import DBViewerMode
 import base64
 import logging
 
@@ -66,7 +67,8 @@ class AppUI:
         # Кнопки меню
         self.btns = {}
         btn_data = [
-            ("База данных", self.show_database),
+            ("База данных стар.", self.show_database),
+            ("База данных (SQL)", self.show_db_viewer_page),
             ("Возврат на склад", self.show_return),
             ("ФБО Ozon", self.show_ozon),
             ("ФБО Wildberries", self.show_wildberries),
@@ -379,6 +381,16 @@ class AppUI:
         frame.pack(fill="both", expand=True)
         self.current_frame = frame
 
+    def show_db_viewer_page(self):
+        """Переключение на просмотр базы данных из SQL"""
+        self._clear_content()
+
+        # Создаем фрейм. Передаем self.db_manager
+        frame = DBViewerMode(self.content_frame,
+                             self.font_normal, self.db_manager)
+        frame.pack(fill="both", expand=True)
+        self.current_frame = frame
+
     def on_close(self):
         # Сохраняем данные из текущего экрана, если есть метод save_data_to_context
         if self.current_frame and hasattr(self.current_frame, 'save_data_to_context'):
@@ -397,7 +409,7 @@ class AppUI:
             elif answer == None:
                 return
 
-        self.save_df_to_excel_cis()
+        # self.save_df_to_excel_cis()
         self.save_config()
         self.context.save_to_file(CONTEXT_FILE)
         self.root.destroy()
