@@ -2,6 +2,7 @@ import requests
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta, timezone
 import time
+import logging
 
 class WildberriesFBSAPI:
     """
@@ -119,11 +120,21 @@ class WildberriesFBSAPI:
         order_ids: список ID сборочных заданий (orders)
         Возвращает: dict с результатом
         """
-        # url = f"{self.BASE_URL}/api/v3/supplies/{supply_id}/orders/{order_id}"
+        url = f"{self.BASE_URL}/api/v3/supplies/{supply_id}/orders/{order_id}"
         # url = f"{self.BASE_URL}/api/v3/supplies/{supply_id}/orders"
-        url = f'{self.BASE_URL}/api/marketplace/v3/supplies/{supply_id}/orders'
-        data = {"orders": [order_id]}
-        response = self.session.patch(url, json=data)
+        # url = f'{self.BASE_URL}/api/marketplace/v3/supplies/{supply_id}/orders'
+        # url = f"{self.BASE_URL}/api/v3/supplies/{supply_id}/orders"
+        # data = {"orders": [order_id]}
+        # response = self.session.patch(url, json=data)
+
+        # Для этого метода тело запроса (json) больше не требуется
+        response = self.session.patch(url)
+        # Если заказ уже в другой поставке или возник конфликт,
+        # добавим обработку, чтобы не «падать»
+        if response.status_code == 409:
+            logging.warning(f"Заказ {order_id} уже находится в поставке или возник конфликт.")
+            return response
+
         response.raise_for_status()
         return response
 

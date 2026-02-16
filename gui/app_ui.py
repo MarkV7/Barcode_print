@@ -377,7 +377,7 @@ class AppUI:
     def show_reports_page(self):
         self._clear_content()
         frame = ReportsMode(self.content_frame,
-                             self.font_normal, self.db_manager)
+                             self.font_normal, self.db_manager, self.context)
         frame.pack(fill="both", expand=True)
         self.current_frame = frame
 

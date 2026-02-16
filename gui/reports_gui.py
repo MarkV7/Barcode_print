@@ -1,16 +1,18 @@
+import threading # Добавь в начало файла
 import customtkinter as ctk
 import pandas as pd
 from tkinter import messagebox, filedialog
 from datetime import datetime
 import re
 import os
+import shutil
 
 class ReportsMode(ctk.CTkFrame):
-    def __init__(self, parent, font, db_manager):
+    def __init__(self, parent, font, db_manager, app_context):
         super().__init__(parent)
         self.db = db_manager
         self.font = font
-
+        self.app_context = app_context
         # Заголовок страницы
         self.title_label = ctk.CTkLabel(self, text="Отчеты", font=ctk.CTkFont(size=26, weight="bold"))
         self.title_label.pack(pady=(20, 30))
@@ -75,27 +77,25 @@ class ReportsMode(ctk.CTkFrame):
         self.btn_export_barcodes.pack(pady=(0, 20), padx=20, fill="x")
 
     def _init_import_block(self):
-        """Блок №2: Импорт данных"""
+        """Блок №2: Импорт справочника"""
         block = ctk.CTkFrame(self.main_container)
         block.grid(row=0, column=1, sticky="nsew", padx=10)
 
-        ctk.CTkLabel(block, text="ИМПОРТ И ОБНОВЛЕНИЕ", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=10)
+        ctk.CTkLabel(block, text="ИМПОРТ", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=10)
 
-        self.btn_import_barcodes = ctk.CTkButton(
-            block, text="Загрузить справочник ШК",
-            command=self.import_barcodes_logic, height=40, fg_color="#2c3e50"
+        # ДОБАВЛЯЕМ self. к кнопке
+        self.btn_import = ctk.CTkButton(
+            block,
+            text="Импортировать справочник",
+            command=self.import_barcodes_logic,
+            height=40  # <--- Добавьте этот параметр
         )
-        self.btn_import_barcodes.pack(pady=20, padx=20, fill="x")
+        self.btn_import.pack(pady=10, padx=20, fill="x")
 
-        ctk.CTkLabel(block, text="Ожидание новых задач...", font=ctk.CTkFont(slant="italic"), text_color="gray").pack()
-
-    def _init_maintenance_block(self):
-        """Блок №3: Обслуживание (Заглушка)"""
-        block = ctk.CTkFrame(self.main_container)
-        block.grid(row=0, column=2, sticky="nsew", padx=10)
-
-        ctk.CTkLabel(block, text="ОБСЛУЖИВАНИЕ БД", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=10)
-        # Пока пусто по просьбе пользователя
+        # ДОБАВЛЯЕМ Прогресс-бар (изначально пустой)
+        self.progress_bar = ctk.CTkProgressBar(block)
+        self.progress_bar.set(0)
+        self.progress_bar.pack(pady=10, padx=20, fill="x")
 
     def _validate_date(self, entry_widget):
         """Визуальная подсказка правильности ввода даты"""
@@ -142,18 +142,204 @@ class ReportsMode(ctk.CTkFrame):
 
     def import_barcodes_logic(self):
         path = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx *.xls")])
-        if path:
-            try:
-                df = pd.read_excel(path)
-                # Простейшая проверка структуры
-                if "Артикул производителя" not in df.columns:
-                    messagebox.showerror("Ошибка", "В файле нет колонки 'Артикул производителя'")
-                    return
+        if not path:
+            return
 
-                success, count = self.db.import_product_barcodes(df)
-                if success:
-                    messagebox.showinfo("Успех", f"Загружено/обновлено записей: {count}")
-                else:
-                    messagebox.showerror("Ошибка БД", count)
+        # 1. Сразу блокируем кнопку и сбрасываем прогресс
+        self.btn_import.configure(state="disabled", text="Загрузка...")
+        self.progress_bar.set(0)
+
+        def worker():
+            try:
+                # Читаем файл (тяжелая операция)
+                df = pd.read_excel(path)
+
+                # Функция-прослойка для обновления прогресс-бара из потока
+                def update_progress(val):
+                    self.after(0, lambda: self.progress_bar.set(val))
+
+                # Запускаем импорт
+                success, count = self.db.import_product_barcodes(df, progress_callback=update_progress)
+
+                # Возвращаемся в главный поток для завершения
+                self.after(0, lambda: self.finish_import(success, count))
             except Exception as e:
-                messagebox.showerror("Ошибка файла", str(e))
+                # logging.error(f"Ошибка в потоке импорта: {e}")
+                self.after(0, lambda: self.finish_import(False, str(e)))
+
+        # Запускаем в отдельном потоке, чтобы GUI не зависал
+        threading.Thread(target=worker, daemon=True).start()
+
+    def finish_import(self, success, result):
+        """Вызывается по окончании импорта"""
+        self.btn_import.configure(state="normal", text="Импортировать справочник")
+        if success:
+            self.progress_bar.set(1.0)
+            messagebox.showinfo("Успех", f"База обновлена. Записей: {result}")
+        else:
+            self.progress_bar.set(0)
+            messagebox.showerror("Ошибка импорта", f"Детали: {result}")
+
+    def _init_maintenance_block(self):
+        """Блок №3: Обслуживание БД"""
+        block = ctk.CTkFrame(self.main_container)
+        block.grid(row=0, column=2, sticky="nsew", padx=10)
+
+        ctk.CTkLabel(block, text="ОБСЛУЖИВАНИЕ БД", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=10)
+
+        # --- СИНХРОНИЗАЦИЯ ---
+        self.btn_sync = ctk.CTkButton(block, text="Синхронизация с Context", height=40, command=self.run_sync_heal)
+        self.btn_sync.pack(pady=(5, 0), padx=20, fill="x")
+        self.sync_progress = ctk.CTkProgressBar(block)
+        self.sync_progress.pack(pady=(10, 5), padx=20, fill="x")
+        self.sync_progress.set(0)
+
+        # --- УДАЛЕНИЕ ДУБЛИКАТОВ ---
+        self.btn_dedup = ctk.CTkButton(block, text="Удалить дубликаты", height=40, fg_color="#A36EB5", hover_color="#8E5EA1", command=self.run_deduplication)
+        self.btn_dedup.pack(pady=(5, 0), padx=20, fill="x")
+        self.dedup_progress = ctk.CTkProgressBar(block)
+        self.dedup_progress.pack(pady=(10, 5), padx=20, fill="x")
+        self.dedup_progress.set(0)
+
+        # --- РАЗДЕЛИТЕЛЬНАЯ ЛИНИЯ ---
+        line = ctk.CTkFrame(block, height=2, fg_color="gray30")
+        line.pack(fill="x", padx=30, pady=20)
+
+        # --- РЕЗЕРВНОЕ КОПИРОВАНИЕ ---
+        self.btn_backup = ctk.CTkButton(
+            block,
+            text="Создать бэкап БД",
+            height=40,
+            fg_color="#28a745",
+            hover_color="#218838",
+            command=self.run_backup)
+        self.btn_backup.pack(pady=5, padx=20, fill="x")
+
+        self.btn_restore = ctk.CTkButton(
+            block,
+            text="Восстановить из бэкапа",
+            height=40,
+            fg_color="#dc3545",  # Красный цвет
+            hover_color="#c82333",
+            command=self.run_restore
+        )
+        self.btn_restore.pack(pady=5, padx=20, fill="x")
+
+    def run_sync_heal(self):
+        """Запуск процесса 'лечения' базы из контекста"""
+        # ИСПРАВЛЕНИЕ: Берем контекст напрямую из self.app_context
+        if not self.app_context or self.app_context.df is None:
+            messagebox.showerror("Ошибка", "Данные в Context (app_context.df) не найдены!")
+            return
+
+        self.btn_sync.configure(state="disabled", text="Синхронизация...")
+        self.sync_progress.set(0)
+
+        # Передаем сам DataFrame в поток
+        source_df = self.app_context.df
+
+        def worker():
+            success, result = self.db.heal_database_from_df(
+                source_df,
+                progress_callback=lambda v: self.after(0, lambda: self.sync_progress.set(v))
+            )
+            # Возвращаем результат в главный поток
+            self.after(0, lambda: self.finish_op(success, f"Синхронизировано строк: {result}", self.btn_sync,
+                                                 "Синхронизация с Context"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def run_deduplication(self):
+        """Запуск очистки дублей"""
+        self.btn_dedup.configure(state="disabled", text="Очистка...")
+        self.dedup_progress.set(0)
+
+        def worker():
+            # Маленькая задержка для визуального эффекта
+            self.after(100, lambda: self.dedup_progress.set(0.3))
+
+            success, result = self.db.deduplicate_product_barcodes()
+
+            self.after(300, lambda: self.dedup_progress.set(0.7))
+            self.after(500, lambda: self.dedup_progress.set(1.0))
+
+            self.after(600, lambda: self.finish_op(
+                success,
+                f"Удалено дублей: {result}",
+                self.btn_dedup,
+                "Удалить дубликаты"
+            ))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def finish_op(self, success, message, btn, original_text):
+        """Завершение операции и возврат кнопки в исходное состояние"""
+        btn.configure(state="normal", text=original_text)
+        if success:
+            messagebox.showinfo("Готово", message)
+        else:
+            messagebox.showerror("Ошибка", message)
+
+    def run_backup(self):
+        """Создает копию файла БД в папку Data"""
+        try:
+            source_db = "barcode_print.db"
+            if not os.path.exists(source_db):
+                messagebox.showerror("Ошибка", "Файл базы данных не найден!")
+                return
+
+            backup_dir = "Data"
+            if not os.path.exists(backup_dir):
+                os.makedirs(backup_dir)
+
+            # Формируем имя: barcode_print_2024-05-20_14-30.db
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+            backup_name = f"barcode_print_{timestamp}.db"
+            dest_path = os.path.join(backup_dir, backup_name)
+
+            shutil.copy2(source_db, dest_path)
+            messagebox.showinfo("Успех", f"Резервная копия создана:\n{backup_name}")
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось создать бэкап: {e}")
+
+    def run_restore(self):
+        """Восстановление БД из выбранного файла в папке Data"""
+        backup_dir = "Data"
+        if not os.path.exists(backup_dir):
+            messagebox.showwarning("Внимание", "Папка Data не найдена.")
+            return
+
+        # Открываем диалог выбора файла именно в папке Data
+        file_path = filedialog.askopenfilename(
+            initialdir=backup_dir,
+            title="Выберите файл бэкапа для восстановления",
+            filetypes=(("Database files", "*.db"), ("All files", "*.*"))
+        )
+
+        if not file_path:
+            return
+
+        confirm = messagebox.askyesno(
+            "Подтверждение",
+            "ВНИМАНИЕ! Текущая база данных будет полностью заменена выбранным файлом. \nПродолжить?"
+        )
+
+        if confirm:
+            try:
+                # Закрываем соединение с БД перед заменой (важно!)
+                # Если у db_manager есть метод close или dispose, вызываем его.
+                # Для SQLite обычно достаточно того, чтобы не было активных запросов.
+
+                target_db = "barcode_print.db"
+                # На всякий случай делаем временный бэкап текущей перед заменой
+                shutil.copy2(target_db, target_db + ".tmp")
+
+                shutil.copy2(file_path, target_db)
+
+                if os.path.exists(target_db + ".tmp"):
+                    os.remove(target_db + ".tmp")
+
+                messagebox.showinfo("Успех",
+                                    "База данных успешно восстановлена! \nРекомендуется перезапустить программу.")
+            except Exception as e:
+                messagebox.showerror("Ошибка", f"Ошибка при восстановлении: {e}")

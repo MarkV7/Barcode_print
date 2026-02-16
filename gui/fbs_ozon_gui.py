@@ -1065,7 +1065,8 @@ class FBSModeOzon(ctk.CTkFrame):
                     "sku": row["sku"],
                     "Артикул поставщика": row["Артикул поставщика"],
                     "Размер": row["Размер"],
-                    "Время добавления": pd.Timestamp.now()
+                    # ИСПРАВЛЕНИЕ: Вместо объекта Timestamp передаем готовую строку
+                    "Время добавления": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 }]).explode("Код маркировки", ignore_index=True)
             # ---------------------- block for self.app_context.df_cis -------------
                 if self.app_context.df_cis is None:
@@ -1086,6 +1087,8 @@ class FBSModeOzon(ctk.CTkFrame):
                 try:
                     # Передаем только новые сформированные строки
                     self.db.sync_dataframe(new_row, "marking_codes", ["Код маркировки"])
+                    # Используем специализированный метод вместо универсального sync_dataframe
+                    # self.db.upsert_marking_codes(new_row)
                     self.show_log(f"Сохранены новые КМ в БД !!!")
                 except Exception as e:
                     self.show_log(f"Ошибка сохранения новых КМ в БД: {e}")

@@ -9,6 +9,14 @@ class DBViewerMode(ctk.CTkFrame):
         super().__init__(parent)
         self.db = db_manager
         self.font = font
+        # Сохраняем ширины здесь, чтобы они жили вместе с объектом фрейма
+        self.column_configs = {
+            "Артикул производителя": 180,
+            "Бренд": 120,
+            "Наименование поставщика": 250,
+            "Штрихкод производителя": 160,
+            "Размер": 70
+        }
         # Инициализируем пустыми DataFrame, чтобы не было ошибки NoneType
         self.df_full = pd.DataFrame()
         self.df_filtered = pd.DataFrame()
@@ -40,6 +48,12 @@ class DBViewerMode(ctk.CTkFrame):
             self.controls_frame, text="Сброс", command=self.reset_search, width=80, fg_color="gray"
         )
         self.btn_clear.pack(side="left", padx=5)
+        # Добавим кнопку обновления в панель управления
+        self.btn_refresh = ctk.CTkButton(
+            self.controls_frame, text="🔄 Обновить",
+            command=self.load_data_from_db, width=100, fg_color="#27ae60"
+        )
+        self.btn_refresh.pack(side="left", padx=5)
 
         # Кнопка удаления (Красная)
         self.btn_delete = ctk.CTkButton(
@@ -150,13 +164,6 @@ class DBViewerMode(ctk.CTkFrame):
             ctk.CTkLabel(self.table_frame, text="Нет данных для отображения").pack(expand=True)
             return
 
-        column_widths = {
-            "Артикул производителя": 180,
-            "Бренд": 120,
-            "Наименование поставщика": 250,
-            "Штрихкод производителя": 160
-        }
-
         # Используем ваш новый модуль gui_table2
         self.table = EditableDataTable(
             self.table_frame,
@@ -166,7 +173,7 @@ class DBViewerMode(ctk.CTkFrame):
             header_font=("Segoe UI", 13, "bold"),
             cell_font=("Segoe UI", 12)
         )
-        self.table.set_column_widths(column_widths)
+        self.table.set_column_widths(self.column_configs)
         self.table.pack(fill="both", expand=True)
 
     def display_table2(self):
