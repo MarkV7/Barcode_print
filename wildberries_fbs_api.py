@@ -44,7 +44,7 @@ class WildberriesFBSAPI:
         date_from = current_time - (days_back * 86400)
         # Основное тело запроса
         data = {
-            "limit": 400,
+            "limit": 600,
             "next": 0,
             "dateFrom": date_from,
             "dateTo": date_to,
@@ -161,3 +161,17 @@ class WildberriesFBSAPI:
         response = self.session.put(url, json=sgtins)
         response.raise_for_status()
         return response
+
+    def get_orders_statuses(self, order_ids: list):
+        """
+        Получить актуальные статусы заказов (v3).
+        Принимает список ID заказов (order_id).
+        """
+        url = f"{self.BASE_URL}/api/v3/orders/status"
+        data = {"orders": order_ids}
+
+        response = self.session.post(url, json=data)
+        response.raise_for_status()
+
+        # Ответ содержит список с полями: orderId, status, subStatus
+        return response.json().get('orders', [])

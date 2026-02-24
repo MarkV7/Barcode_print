@@ -2,6 +2,7 @@ import customtkinter as ctk
 import pandas as pd
 from tkinter import messagebox
 from gui.gui_table2 import EditableDataTable
+from sqlalchemy import text
 
 
 class DBViewerMode(ctk.CTkFrame):
@@ -23,7 +24,7 @@ class DBViewerMode(ctk.CTkFrame):
 
         self.title_label = ctk.CTkLabel(
             self,
-            text="🗄️ Просмотр Базы Данных (SQL)",
+            text="Справочник ТОВАРОВ",
             font=ctk.CTkFont(size=20, weight="bold")
         )
         self.title_label.pack(pady=(10, 20), padx=20, anchor="w")
@@ -50,10 +51,24 @@ class DBViewerMode(ctk.CTkFrame):
         self.btn_clear.pack(side="left", padx=5)
         # Добавим кнопку обновления в панель управления
         self.btn_refresh = ctk.CTkButton(
-            self.controls_frame, text="🔄 Обновить",
-            command=self.load_data_from_db, width=100, fg_color="#27ae60"
+            self.controls_frame,
+            text="🔄 Обновить",
+            command=self.load_data_from_db,
+            width=100 #,
+            # fg_color="#27ae60"
         )
         self.btn_refresh.pack(side="left", padx=5)
+
+        # ДОБАВЛЯЕМ КНОПКУ СОХРАНИТЬ
+        self.save_btn = ctk.CTkButton(
+            self.controls_frame,
+            text="💾 Сохранить",
+            fg_color="#27ae60",
+            # hover_color="#219150",
+            width=100,
+            command=self.save_changes
+        )
+        self.save_btn.pack(side="left", padx=5)
 
         # Кнопка удаления (Красная)
         self.btn_delete = ctk.CTkButton(
@@ -77,15 +92,40 @@ class DBViewerMode(ctk.CTkFrame):
 
         self.load_data_from_db()
 
-    def load_data_from_db(self):
+    def load_data_from_db_old(self):
         try:
             data = self.db.get_all_product_barcodes()
             # Проверка: если пришло None, делаем пустой DF
             self.df_full = data if data is not None else pd.DataFrame()
-            self.df_filtered = self.df_full.copy()
+            # ЗАМЕНЯЕМ None и NaN на пустые строки для красоты
+            self.df_filtered = self.df_full.fillna('').copy()
 
             # ВАЖНО: Вызываем отрисовку
             self.display_table()
+        except Exception as e:
+            messagebox.showerror("Ошибка БД", f"Не удалось загрузить данные:\n{str(e)}")
+
+    def load_data_from_db(self):
+        try:
+            data = self.db.get_all_product_barcodes()
+
+            if data is None or data.empty:
+                self.df_full = pd.DataFrame()
+                self.df_filtered = pd.DataFrame()
+            else:
+                # 1. Сначала заполняем NaN пустыми строками
+                df = data.fillna('')
+
+                # 2. ХАК: Принудительно заменяем строковые "None" и "nan",
+                # которые могли появиться при конвертации типов
+                df = df.astype(str).replace(['None', 'nan', 'NaN', '<NA>'], '')
+
+                self.df_full = df
+                self.df_filtered = self.df_full.copy()
+
+            # Вызываем отрисовку
+            self.display_table()
+
         except Exception as e:
             messagebox.showerror("Ошибка БД", f"Не удалось загрузить данные:\n{str(e)}")
 
@@ -169,52 +209,72 @@ class DBViewerMode(ctk.CTkFrame):
             self.table_frame,
             dataframe=self.df_filtered,
             columns=self.df_filtered.columns.tolist(),
-            rows_per_page=1000,
+            rows_per_page=100,
             header_font=("Segoe UI", 13, "bold"),
             cell_font=("Segoe UI", 12)
         )
         self.table.set_column_widths(self.column_configs)
         self.table.pack(fill="both", expand=True)
 
-    def display_table2(self):
-        for widget in self.table_frame.winfo_children():
-            widget.destroy()
+        # Принудительно включаем редактирование по двойному клику
+        self.table.tree.bind("<Double-1>", lambda e: self.table._on_double_click(e), add="+")
 
-        if self.df is None or self.df.empty:
-            ctk.CTkLabel(self.table_frame, text="База данных пуста").pack(expand=True)
-            return
+        # И не забудьте про фокус, чтобы таблица сразу слушала клавиатуру
+        self.table.tree.bind("<Button-1>", lambda e: self.table.tree.focus_set(), add="+")
 
-        # 1. Настройка ширин колонок (примерные веса)
-        # Ключ - название колонки в БД, значение - ширина
-        column_widths = {
-            "Артикул производителя": 180,
-            "Размер": 70,
-            "Бренд": 120,
-            "Наименование поставщика": 250,
-            "Штрихкод производителя": 160,
-            "Артикул Ozon": 120,
-            "Артикул Вайлдбериз": 120,
-            "Штрихкод OZON": 180,
-            "Баркод  Wildberries": 180,
-            "Коробка": 80,
-            "SKU OZON": 150
-        }
 
-        # 2. Создаем таблицу
-        self.table = EditableDataTable(
-            self.table_frame,
-            dataframe=self.df,
-            columns=self.df.columns.tolist(),
-            on_row_select=None,
-            max_rows=None,  # УБРАЛИ ОГРАНИЧЕНИЕ (теперь грузит всё)
-            header_font=("Segoe UI", 13, "bold"),
-            cell_font=("Segoe UI", 12),
-            rows_per_page=1000  # Это обеспечит "летающую" скорость
-        )
-        self.table.set_column_widths(column_widths)
-        # 3. Применяем ширину колонок (если метод существует в твоем классе)
-        if hasattr(self.table, "set_column_widths"):
-            self.table.set_column_widths(column_widths)
 
-        self.table.pack(fill="both", expand=True)
+    def save_changes(self):
+        """Сохранение отредактированных данных в таблицу product_barcodes"""
+        try:
+            # Получаем текущие данные из таблицы (атрибут .df в EditableDataTable)
+            current_df = self.table.df
 
+            if current_df is None or current_df.empty:
+                return
+
+            with self.db.engine.begin() as conn:
+                for _, row in current_df.iterrows():
+                    # Формируем параметры для SQL
+                    # Используем .get() для безопасности, если колонки будут переименованы
+                    params = {
+                        "brand": str(row.get("Бренд", "")),
+                        "supplier_name": str(row.get("Наименование поставщика", "")),
+                        "vendor_barcode": str(row.get("Штрихкод производителя", "")),
+                        "ozon_art": str(row.get("Артикул Ozon", "")),
+                        "wb_art": str(row.get("Артикул Вайлдбериз", "")),
+                        "ozon_barcode": str(row.get("Штрихкод OZON", "")),
+                        "wb_barcode": str(row.get("Баркод  Wildberries", "")),
+                        "box": str(row.get("Коробка", "")),
+                        "sku_ozon": str(row.get("SKU OZON", "")),
+                        # Ключи для WHERE
+                        "main_art": row["Артикул производителя"],
+                        "size": row["Размер"]
+                    }
+
+                    query = text('''
+                        UPDATE product_barcodes 
+                        SET "Бренд" = :brand,
+                            "Наименование поставщика" = :supplier_name,
+                            "Штрихкод производителя" = :vendor_barcode,
+                            "Артикул Ozon" = :ozon_art,
+                            "Артикул Вайлдбериз" = :wb_art,
+                            "Штрихкод OZON" = :ozon_barcode,
+                            "Баркод  Wildberries" = :wb_barcode,
+                            "Коробка" = :box,
+                            "SKU OZON" = :sku_ozon
+                        WHERE "Артикул производителя" = :main_art 
+                          AND "Размер" = :size
+                    ''')
+
+                    conn.execute(query, params)
+
+            import logging
+            logging.info("База SQL: Изменения в product_barcodes успешно сохранены.")
+            messagebox.showinfo("Успех", "Данные товаров успешно обновлены!")
+            self.load_data_from_db()  # Перезагрузка для чистоты данных
+
+        except Exception as e:
+            import logging
+            logging.error(f"Ошибка сохранения БД товаров: {e}", exc_info=True)
+            messagebox.showerror("Ошибка", f"Не удалось сохранить изменения:\n{e}")

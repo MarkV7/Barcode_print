@@ -3,10 +3,12 @@ import os
 import tkinter as tk
 import customtkinter as ctk
 import pandas as pd
+from datetime import datetime
 from tkinter import messagebox
 from gui.gui_table import EditableDataTable
 from sound_player import play_success_scan_sound, play_unsuccess_scan_sound
 from printer_handler import LabelPrinter
+from db_manager import DBManager  # <--- ИМПОРТ МЕНЕДЖЕРА БД
 
 
 class OzonMode(ctk.CTkFrame):
@@ -18,8 +20,11 @@ class OzonMode(ctk.CTkFrame):
         self.focus_timer_id = None
         self.clear_timer_id = None
         self.scan_entry = None
-        self.marking_code_entry = None  # Поле для ввода кода маркировки
-        self.current_product = None  # Хранит последний найденный товар
+        self.marking_code_entry = None
+        self.current_product = None
+
+        # Инициализация менеджера БД
+        self.db = DBManager()
 
         # Инициализируем UI
         self.setup_ui()
@@ -85,7 +90,6 @@ class OzonMode(ctk.CTkFrame):
         self.product_info_label.lower()
 
         # Лог сообщений
-        # Журнал справа сверху (в абсолютных координатах)
         self.log_label = ctk.CTkLabel(
             self,
             text="",
@@ -105,7 +109,7 @@ class OzonMode(ctk.CTkFrame):
         self.table_container.pack(fill="both", expand=True, padx=20, pady=10)
 
     def handle_keypress(self, event):
-        if self.table:
+        if hasattr(self, 'table') and self.table:
             self.table.on_keypress(event)
 
     def reset_clear_timer(self, event=None):
@@ -133,41 +137,91 @@ class OzonMode(ctk.CTkFrame):
         if not barcode:
             return
 
-        if self.app_context.df is None:
-            messagebox.showwarning("Ошибка", "Сначала загрузите файл базы данных.")
-            return
+        founded_row = pd.DataFrame()
+        source = "unknown"
 
-        # Поиск товара по штрихкоду
-        founded_row = self.app_context.df[self.app_context.df["Штрихкод производителя"].astype(str) == barcode]
+        # === 1. ПОПЫТКА ПОИСКА В БД (SQLite) ===
+        try:
+            # Пытаемся найти товар в базе данных
+            # Используем прямой SQL запрос или метод менеджера, если он есть.
+            # Здесь пример универсального запроса.
+            query = """
+                SELECT * FROM product_barcodes 
+                WHERE "Штрихкод производителя" = ? OR "Штрихкод OZON" = ?
+            """
+            result = self.db.execute_query(query, (barcode, barcode))
+
+            if result and len(result) > 0:
+                # Преобразуем результат БД в формат Series, совместимый с кодом
+                db_row = result[0]  # Берем первое совпадение
+
+                # Маппинг полей БД -> Поля приложения
+                # В БД поле называется "SKU OZON", в приложении ожидается "Артикул Ozon"
+                data = {
+                    "Штрихкод производителя": db_row.get("Штрихкод производителя"),
+                    "Артикул производителя": db_row.get("Артикул производителя"),
+                    "Размер": db_row.get("Размер"),
+                    "Наименование поставщика": db_row.get("Наименование поставщика", ""),
+                    "Штрихкод OZON": db_row.get("Штрихкод OZON"),
+                    "Артикул Ozon": db_row.get("SKU OZON")  # Важное сопоставление
+                }
+
+                # Создаем DataFrame из одной строки, чтобы логика ниже была единой
+                founded_row = pd.DataFrame([data])
+                source = "db"
+                self.show_log("✅ Товар найден в БД", bg_color="#E0FFE0", text_color="green")
+
+        except Exception as e:
+            print(f"Ошибка поиска в БД: {e}")
+            # Если ошибка БД, просто идем дальше к старому методу
+
+        # === 2. ФОЛБЭК НА СТАРЫЙ МЕТОД (Excel/Context) ===
+        if founded_row.empty:
+            if self.app_context.df is None:
+                messagebox.showwarning("Ошибка", "Товар не найден в БД, а файл базы данных не загружен.")
+                return
+
+            # Старый поиск по штрихкоду
+            founded_row = self.app_context.df[self.app_context.df["Штрихкод производителя"].astype(str) == barcode]
+            source = "context"
+
+        # === ПРОВЕРКИ РЕЗУЛЬТАТА ===
         if founded_row.empty:
             play_unsuccess_scan_sound()
-            self.show_log("⚠️ Штрихкод не найден", bg_color="#FFE0E0", text_color="red")
+            self.show_log("⚠️ Штрихкод не найден ни в БД, ни в файле", bg_color="#FFE0E0", text_color="red")
             return
 
         # Сохраняем текущий товар
         self.current_product = founded_row.iloc[0]
 
-        # Проверяем что товар есть на озон
-        if  pd.isna(self.current_product.get('Штрихкод OZON')) or not self.current_product.get('Штрихкод OZON'):
+        # Проверяем наличие обязательных полей
+        ozon_barcode = self.current_product.get('Штрихкод OZON')
+        if pd.isna(ozon_barcode) or not ozon_barcode:
             play_unsuccess_scan_sound()
-            self.show_log("⚠️ У продукта нет штрикода OZON", bg_color="#FFE0E0", text_color="red")
+            self.show_log("⚠️ У продукта нет штрихкода OZON", bg_color="#FFE0E0", text_color="red")
             return
-        if pd.isna(self.current_product.get('Артикул Ozon')) or not self.current_product.get('Артикул Ozon'):
+
+        ozon_article = self.current_product.get('Артикул Ozon')
+        if pd.isna(ozon_article) or not ozon_article:
             self.show_log("⚠️ У продукта нет артикула OZON", bg_color="#FFE0E0", text_color="red")
             return
 
         play_success_scan_sound()
-        self.show_log("✅ Код принят", bg_color="#E0FFE0", text_color="green")
+        if source == "context":
+            self.show_log("✅ Код принят (из файла)", bg_color="#E0FFE0", text_color="green")
+        else:
+            self.show_log("✅ Код принят (из БД)", bg_color="#D0F0C0", text_color="darkgreen")
 
         product_info = (
             f"{self.current_product['Артикул производителя']} | "
             f"{self.current_product['Размер']} | "
             f"{self.current_product['Наименование поставщика']} | "
             f"{self.current_product['Артикул Ozon']}"
-            # f"{self.current_product['Штрихкод OZON']}"
         )
         # Переключаемся на ввод кода маркировки
         self.await_marking_code(product_info)
+
+
 
     def await_marking_code(self, product_info):
         """Открывает поле для ввода кода маркировки"""
@@ -183,10 +237,9 @@ class OzonMode(ctk.CTkFrame):
         self.on_edit_end()
 
         label_printer = LabelPrinter(self.app_context.printer_name)
-
         code = self.marking_code_entry.get().strip()
-        
-        # Сбрасываем
+
+        # Сбрасываем UI
         self.scanning_label.configure(text="Ожидание сканирования... 📱")
         self.product_info_label.lower()
         self.marking_code_entry.delete(0, tk.END)
@@ -201,11 +254,10 @@ class OzonMode(ctk.CTkFrame):
             return
 
         play_success_scan_sound()
-
         self.scanning_label.configure(text='Идет распечатка этикеток...')
 
+        # === ПЕЧАТЬ ЭТИКЕТОК ===
         filename = '__temp_label_print__.png'
-        # Печать этикеток
         try:
             ozon_id = self.current_product['Штрихкод OZON']
             ozon_product_info = [
@@ -216,19 +268,9 @@ class OzonMode(ctk.CTkFrame):
             ozon_label = label_printer.create_ozon_label(str(ozon_id), ozon_product_info, 'DejaVuSans.ttf')
             ozon_label.save(filename)
             label_printer.print_on_windows(image_path=filename)
-            label_printer.print_on_windows(image_path=filename)
+            # label_printer.print_on_windows(image_path=filename) # Второй раз если нужно
         except Exception as ex:
-            error_details = {
-                'type': type(ex).__name__,
-                'message': str(ex),
-                'traceback': traceback.format_exc()
-            }
-            with open('error_OZON_eticate.txt', 'w', encoding='utf-8') as f:
-                f.write("=== Ошибка при печати этикетки Ozon ===\n")
-                f.write(f"Тип ошибки: {error_details['type']}\n")
-                f.write(f"Сообщение: {error_details['message']}\n")
-                f.write("Traceback:\n")
-                f.write(''.join(error_details['traceback']))
+            self.log_error("OZON_eticate", ex)
 
         try:
             chestniy_znak_product_info = [
@@ -238,23 +280,14 @@ class OzonMode(ctk.CTkFrame):
             chestniy_znak_label = label_printer.generate_gs1_datamatrix_from_raw(code, chestniy_znak_product_info)
             chestniy_znak_label.save(filename)
             label_printer.print_on_windows(image_path=filename)
-            label_printer.print_on_windows(image_path=filename)
+            # label_printer.print_on_windows(image_path=filename) # Второй раз если нужно
         except Exception as ex:
-            error_details = {
-                'type': type(ex).__name__,
-                'message': str(ex),
-                'traceback': traceback.format_exc()
-            }
-            with open('error_CHESTNZKNAK.txt', 'w', encoding='utf-8') as f:
-                f.write("=== Ошибка при печати этикетки Честный Знак ===\n")
-                f.write(f"Тип ошибки: {error_details['type']}\n")
-                f.write(f"Сообщение: {error_details['message']}\n")
-                f.write("Traceback:\n")
-                f.write(''.join(error_details['traceback']))
+            self.log_error("CHESTNZKNAK", ex)
 
-        os.remove(filename)
+        if os.path.exists(filename):
+            os.remove(filename)
 
-        # Обновляем таблицу
+        # Обновляем таблицу интерфейса
         self.add_or_update_table_entry(code)
 
         self.after(2000, lambda: self.log_label.configure(text=""))
@@ -262,43 +295,46 @@ class OzonMode(ctk.CTkFrame):
         self.show_log("✅ Успешно", bg_color="#E0FFE0", text_color="green")
         play_success_scan_sound()
 
+    def log_error(self, prefix, ex):
+        error_details = {
+            'type': type(ex).__name__,
+            'message': str(ex),
+            'traceback': traceback.format_exc()
+        }
+        with open(f'error_{prefix}.txt', 'w', encoding='utf-8') as f:
+            f.write(f"=== Ошибка при печати {prefix} ===\n")
+            f.write(f"Тип ошибки: {error_details['type']}\n")
+            f.write(f"Сообщение: {error_details['message']}\n")
+            f.write("Traceback:\n")
+            f.write(''.join(error_details['traceback']))
+
     def print_labels(self, code):
         """Моделирует печать этикеток"""
         print(f"Печать этикеток для: {code}")
 
     def add_or_update_table_entry(self, code):
-        print("Метод вызван!")
-        art = self.current_product["Артикул Ozon"]
+        art = self.current_product.get("Артикул Ozon")
 
-        # Поиск совпадений по артикулу
         matches = self.fbo_df[self.fbo_df["Артикул Ozon"] == art]
 
         if not matches.empty:
-            # Берём индекс первой совпавшей строки
             idx = matches.index[0]
-
-            # Получаем текущие значения
             current_count = self.fbo_df.loc[idx, "Количество"]
             marking_codes = self.fbo_df.loc[idx, "Код маркировки"]
 
-            # Пробуем привести к числу
             try:
                 current_count = int(current_count)
             except (ValueError, TypeError):
                 current_count = 0
 
-            # Добавляем новый код маркировки
             if isinstance(marking_codes, str) and marking_codes:
                 marking_codes += ", " + code
             else:
                 marking_codes = code
 
-            # Обновляем значения в DataFrame
             self.fbo_df.loc[idx, "Количество"] = current_count + 1
             self.fbo_df.loc[idx, "Код маркировки"] = marking_codes
-
         else:
-            # Создаём новую строку
             new_row = pd.DataFrame([{
                 "Артикул Ozon": art,
                 "Количество": 1,
@@ -306,7 +342,6 @@ class OzonMode(ctk.CTkFrame):
             }])
             self.fbo_df = pd.concat([self.fbo_df, new_row], ignore_index=True)
 
-        # Обновляем таблицу в интерфейсе
         self.update_table()
 
     def update_table(self):
@@ -320,7 +355,7 @@ class OzonMode(ctk.CTkFrame):
             columns='',
             header_font=("Segoe UI", 14, "bold"),
             cell_font=("Segoe UI", 14),
-            on_row_select='', #self._handle_row_selection,
+            on_row_select=None,
             readonly=False,
             on_edit_start=self.on_edit_start,
             on_edit_end=self.on_edit_end
@@ -349,21 +384,15 @@ class OzonMode(ctk.CTkFrame):
         self._log_text_color = text_color
         self.log_label.configure(text=message, text_color=text_color, fg_color=bg_color)
         self.log_label.lift()
-
-        # Показываем сразу (без анимации появления)
         self.after(1500, self.animate_log_fade_out)
 
     def animate_log_fade_in(self, bg_color, text_color, alpha):
         if alpha >= 1.0:
-            # После появления запускаем исчезновение
             self.after(1500, lambda: self.animate_log_fade_out(bg_color, text_color, 1.0))
             return
-
-        # Интерполируем цвет от серого к целевому
         start_bg = "#DDDDDD"
         blended_bg = self.blend_colors(start_bg, bg_color, alpha)
         blended_text = text_color if alpha >= 0.5 else "gray50"
-
         self.log_label.configure(fg_color=blended_bg, text_color=blended_text)
         self.after(30, lambda: self.animate_log_fade_in(bg_color, text_color, alpha + 0.1))
 
@@ -372,20 +401,15 @@ class OzonMode(ctk.CTkFrame):
             self.log_label.configure(text="", fg_color="#FFFFFF")
             self.log_label.lower()
             return
-
-        # Линейное осветление фона
         bg = self.hex_to_grayscale(self._log_bg_color, factor=1 - (current_step / step))
         text = self._log_text_color if current_step < step * 0.6 else "gray70"
-
         self.log_label.configure(fg_color=bg, text_color=text)
         self.after(30, lambda: self.animate_log_fade_out(step, current_step + 1))
 
     def hex_to_grayscale(self, color, factor=1.0):
-        """Превращает цвет в более светлый, в зависимости от factor (0 — белый, 1 — оригинал)"""
-
         def hex_to_rgb(h):
             h = h.lstrip('#')
-            return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+            return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
 
         def rgb_to_hex(r, g, b):
             return f"#{r:02X}{g:02X}{b:02X}"
@@ -394,13 +418,8 @@ class OzonMode(ctk.CTkFrame):
             r, g, b = hex_to_rgb(color)
         except ValueError:
             return "#FFFFFF"
-
-        # Белый базовый цвет
         w_r, w_g, w_b = 255, 255, 255
-
-        # Смешиваем цвет с белым
         blended_r = int(r * factor + w_r * (1 - factor))
         blended_g = int(g * factor + w_g * (1 - factor))
         blended_b = int(b * factor + w_b * (1 - factor))
-
         return rgb_to_hex(blended_r, blended_g, blended_b)

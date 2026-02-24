@@ -2,10 +2,12 @@ import os
 import tkinter as tk
 import customtkinter as ctk
 import pandas as pd
+from datetime import datetime
 from tkinter import messagebox
 from gui.gui_table import EditableDataTable
 from sound_player import play_success_scan_sound, play_unsuccess_scan_sound
 from printer_handler import LabelPrinter
+from db_manager import DBManager  # <--- ИМПОРТ МЕНЕДЖЕРА БД
 
 
 class WildberriesMode(ctk.CTkFrame):
@@ -17,8 +19,11 @@ class WildberriesMode(ctk.CTkFrame):
         self.focus_timer_id = None
         self.clear_timer_id = None
         self.scan_entry = None
-        self.marking_code_entry = None  # Поле для ввода кода маркировки
-        self.current_product = None  # Хранит последний найденный товар
+        self.marking_code_entry = None
+        self.current_product = None
+
+        # Инициализация менеджера БД (ТОЛЬКО ДЛЯ ЧТЕНИЯ)
+        self.db = DBManager()
 
         # Инициализируем UI
         self.setup_ui()
@@ -103,7 +108,7 @@ class WildberriesMode(ctk.CTkFrame):
         self.table_container.pack(fill="both", expand=True, padx=20, pady=10)
 
     def handle_keypress(self, event):
-        if self.table:
+        if hasattr(self, 'table') and self.table:
             self.table.on_keypress(event)
 
     def reset_clear_timer(self, event=None):
@@ -130,12 +135,51 @@ class WildberriesMode(ctk.CTkFrame):
         self.scan_entry.delete(0, "end")
         if not barcode:
             return
-        if self.app_context.df is None:
-            messagebox.showwarning("Ошибка", "Сначала загрузите файл базы данных.")
-            return
 
-        # Поиск товара по штрихкоду
-        founded_row = self.app_context.df[self.app_context.df["Штрихкод производителя"].astype(str) == barcode]
+        founded_row = pd.DataFrame()
+        source = "unknown"
+
+        # === 1. ПОПЫТКА ПОИСКА В БД (SQLite) - ТОЛЬКО ЧТЕНИЕ ===
+        try:
+            # Пытаемся найти товар по штрихкоду производителя или баркоду WB
+            query = """
+                SELECT * FROM product_barcodes 
+                WHERE "Штрихкод производителя" = ? OR "Баркод  Wildberries" = ?
+            """
+            result = self.db.execute_query(query, (barcode, barcode))
+
+            if result and len(result) > 0:
+                # Преобразуем результат БД в формат Series/DataFrame
+                db_row = result[0]
+
+                data = {
+                    "Штрихкод производителя": db_row.get("Штрихкод производителя"),
+                    "Артикул производителя": db_row.get("Артикул производителя"),
+                    "Размер": db_row.get("Размер"),
+                    "Наименование поставщика": db_row.get("Наименование поставщика", ""),
+                    "Баркод  Wildberries": db_row.get("Баркод  Wildberries"),
+                    "Артикул Вайлдбериз": db_row.get("Баркод  Wildberries")  # Используем баркод как артикул WB для FBO
+                }
+
+                founded_row = pd.DataFrame([data])
+                source = "db"
+                self.show_log("✅ Товар найден в БД", bg_color="#E0FFE0", text_color="green")
+
+        except Exception as e:
+            print(f"Ошибка поиска в БД: {e}")
+            # Если ошибка БД, идем к старому методу
+
+        # === 2. ФОЛБЭК НА СТАРЫЙ МЕТОД (Excel/Context) ===
+        if founded_row.empty:
+            if self.app_context.df is None:
+                messagebox.showwarning("Ошибка", "Товар не найден в БД, а файл базы данных не загружен.")
+                return
+
+            # Старый поиск по штрихкоду
+            founded_row = self.app_context.df[self.app_context.df["Штрихкод производителя"].astype(str) == barcode]
+            source = "context"
+
+        # === ПРОВЕРКИ РЕЗУЛЬТАТА ===
         if founded_row.empty:
             play_unsuccess_scan_sound()
             self.show_log("⚠️ Штрихкод не найден", bg_color="#FFE0E0", text_color="red")
@@ -144,18 +188,26 @@ class WildberriesMode(ctk.CTkFrame):
         # Сохраняем текущий товар
         self.current_product = founded_row.iloc[0]
 
-        # Проверяем что товар есть на Wildberries
-        if pd.isna(self.current_product.get('Баркод  Wildberries')) or not self.current_product.get('Баркод  Wildberries'):
+        # !!! ВНИМАНИЕ: УБРАН БЛОК СОХРАНЕНИЯ В БД (save_product_to_db) !!!
+        # Мы только читаем. Если товара нет в БД, работаем с данными из файла, но не сохраняем их.
+
+        # Проверка полей
+        wb_barcode = self.current_product.get('Баркод  Wildberries') or self.current_product.get('Баркод Wildberries')
+        if pd.isna(wb_barcode) or not wb_barcode:
             play_unsuccess_scan_sound()
             self.show_log("⚠️ У продукта нет баркода Wildberries", bg_color="#FFE0E0", text_color="red")
             return
 
-        if pd.isna(self.current_product.get('Артикул Вайлдбериз')) or not self.current_product.get('Артикул Вайлдбериз'):
+        wb_article = self.current_product.get('Артикул Вайлдбериз')
+        if pd.isna(wb_article) or not wb_article:
             self.show_log("⚠️ У продукта нет артикула Wildberries", bg_color="#FFE0E0", text_color="red")
             return
 
         play_success_scan_sound()
-        self.show_log("✅ Код принят", bg_color="#E0FFE0", text_color="green")
+        if source == "context":
+            self.show_log("✅ Код принят (из файла)", bg_color="#E0FFE0", text_color="green")
+        else:
+            self.show_log("✅ Код принят (из БД)", bg_color="#D0F0C0", text_color="darkgreen")
 
         product_info = (
             f"{self.current_product['Артикул производителя']} | "
@@ -199,7 +251,7 @@ class WildberriesMode(ctk.CTkFrame):
         play_success_scan_sound()
         self.scanning_label.configure(text='Идет распечатка этикеток...')
         filename = '__temp_label_print__.png'
-        
+
         wb_id = self.current_product.get('Баркод  Wildberries') or self.current_product.get('Баркод Wildberries')
 
         # Печать этикетки Wildberries
@@ -208,24 +260,34 @@ class WildberriesMode(ctk.CTkFrame):
             f"{self.current_product.get('Наименование поставщика', '')}",
             f"Артикул WB: {self.current_product.get('Артикул Вайлдбериз', '')}"
         ]
-        wb_label = label_printer.create_ozon_label(str(wb_id), wb_product_info, 'DejaVuSans.ttf', height=150)
-        wb_label.save(filename)
-        label_printer.print_on_windows(image_path=filename)
-        label_printer.print_on_windows(image_path=filename)
+
+        try:
+            wb_label = label_printer.create_ozon_label(str(wb_id), wb_product_info, 'DejaVuSans.ttf', height=150)
+            wb_label.save(filename)
+            label_printer.print_on_windows(image_path=filename)
+            label_printer.print_on_windows(image_path=filename)
+        except Exception as e:
+            print(f"Ошибка печати WB этикетки: {e}")
 
         # Печать Честного Знака
-        chestniy_znak_product_info = [
-            f"{self.current_product.get('Наименование поставщика', '')}",
-            f"Размер: {self.current_product.get('Размер', '')}"
-        ]
-        chestniy_znak_label = label_printer.generate_gs1_datamatrix_from_raw(code, chestniy_znak_product_info)
-        chestniy_znak_label.save(filename)
-        label_printer.print_on_windows(image_path=filename)
-        label_printer.print_on_windows(image_path=filename)
+        try:
+            chestniy_znak_product_info = [
+                f"{self.current_product.get('Наименование поставщика', '')}",
+                f"Размер: {self.current_product.get('Размер', '')}"
+            ]
+            chestniy_znak_label = label_printer.generate_gs1_datamatrix_from_raw(code, chestniy_znak_product_info)
+            chestniy_znak_label.save(filename)
+            label_printer.print_on_windows(image_path=filename)
+            label_printer.print_on_windows(image_path=filename)
+        except Exception as e:
+            print(f"Ошибка печати ЧЗ этикетки: {e}")
 
-        os.remove(filename)
+        if os.path.exists(filename):
+            os.remove(filename)
 
-        # Обновляем таблицу
+        # !!! ВНИМАНИЕ: УБРАН БЛОК СОХРАНЕНИЯ КИЗ В БД (save_marking_code_to_db) !!!
+
+        # Обновляем таблицу (только в интерфейсе)
         self.add_or_update_table_entry(code)
 
         self.after(2000, lambda: self.log_label.configure(text=""))
@@ -274,7 +336,7 @@ class WildberriesMode(ctk.CTkFrame):
             columns='',
             header_font=("Segoe UI", 14, "bold"),
             cell_font=("Segoe UI", 14),
-            on_row_select='',
+            on_row_select=None,
             readonly=False,
             on_edit_start=self.on_edit_start,
             on_edit_end=self.on_edit_end
@@ -317,7 +379,7 @@ class WildberriesMode(ctk.CTkFrame):
     def hex_to_grayscale(self, color, factor=1.0):
         def hex_to_rgb(h):
             h = h.lstrip('#')
-            return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+            return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
 
         def rgb_to_hex(r, g, b):
             return f"#{r:02X}{g:02X}{b:02X}"

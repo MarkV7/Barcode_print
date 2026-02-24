@@ -298,3 +298,29 @@ class OzonFBSAPI:
         label_data_base64 = base64.b64encode(response.content).decode('utf-8')
 
         return label_data_base64  # Возвращаем Base64 строку
+
+    def get_posting_info(self, posting_number: str) -> Dict:
+        """
+        Получить подробную информацию о конкретном отправлении (v3).
+        Позволяет узнать статус выкупа и доставки.
+        """
+        path = "v3/posting/fbs/get"
+        data = {"posting_number": posting_number}
+        return self._request("POST", path, data=data)
+
+    def get_fbs_returns(self, last_days: int = 7) -> List:
+        """
+        Получить список возвратов за последние N дней.
+        Помогает выявить товары, которые не были выкуплены.
+        """
+        path = "v2/returns/fbs/list"
+        # Вычисляем дату начала
+        since = (datetime.now(timezone.utc) - timedelta(days=last_days)).isoformat()
+
+        data = {
+            "filter": {
+                "last_id": 0
+            },
+            "limit": 1000
+        }
+        return self._request("POST", path, data=data).get('returns', [])

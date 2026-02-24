@@ -38,7 +38,11 @@ class DBManager:
                 "sku" TEXT,
                 "Артикул поставщика" TEXT,
                 "Размер" TEXT,
-                "Время добавления" TIMESTAMP DEFAULT (datetime('now', 'localtime'))
+                "Время добавления" TIMESTAMP DEFAULT (datetime('now', 'localtime')),
+                "Статус" TEXT DEFAULT 'Отгружен',
+                "Маркетплейс" TEXT,
+                "Дата обновления" TIMESTAMP,
+                "Дата продажи" TEXT
             )
             """,
             """
@@ -86,9 +90,49 @@ class DBManager:
             with self.engine.begin() as conn:
                 for cmd in commands:
                     conn.execute(text(cmd))
+            # Запускаем проверку на случай, если таблица уже была создана старой версией
+            self._migrate_marking_codes()
             logging.info("DB: Таблицы SQLite инициализированы.")
         except Exception as e:
             logging.error(f"DB: Ошибка инициализации таблиц: {e}")
+
+    def _migrate_marking_codes(self):
+        """Добавляет недостающие колонки в существующую таблицу"""
+        new_columns = {
+            "Статус": "TEXT DEFAULT 'Отгружен'",
+            "Маркетплейс": "TEXT",
+            "Дата обновления": "TIMESTAMP",
+            "Дата продажи": "TEXT"
+        }
+
+        try:
+            with self.engine.begin() as conn:
+                # Получаем текущие колонки
+                existing_columns = [row[1] for row in conn.execute(text("PRAGMA table_info(marking_codes)"))]
+
+                for col_name, col_type in new_columns.items():
+                    if col_name not in existing_columns:
+                        logging.info(f"Миграция БД: Добавление колонки {col_name} в marking_codes")
+                        conn.execute(text(f'ALTER TABLE marking_codes ADD COLUMN "{col_name}" {col_type}'))
+        except Exception as e:
+            logging.error(f"Ошибка миграции marking_codes: {e}")
+
+    def update_kiz_status(self, marking_code: str, status: str, sale_date: str = None):
+        """Метод для обновления статуса КИЗ после синхронизации с API"""
+        sql = """
+        UPDATE marking_codes 
+        SET "Статус" = :status, 
+            "Дата продажи" = :sale_date, 
+            "Дата обновления" = datetime('now', 'localtime')
+        WHERE "Код маркировки" = :code
+        """
+        try:
+            with self.engine.begin() as conn:
+                conn.execute(text(sql), {"status": status, "sale_date": sale_date, "code": marking_code})
+            return True
+        except Exception as e:
+            logging.error(f"Ошибка обновления статуса КИЗ {marking_code}: {e}")
+            return False
 
     def sync_dataframe(self, df: pd.DataFrame, table_name: str, key_columns: list):
         """
@@ -553,3 +597,31 @@ class DBManager:
         except Exception as e:
             logging.error(f"Ошибка дедупликации: {e}")
             return False, str(e)
+
+    def patch_marketplace_column(self):
+        """Автоматически заполняет колонку Маркетплейс для старых записей"""
+        try:
+            with self.engine.begin() as conn:
+                # 1. Если в номере есть дефис — это точно Ozon
+                sql_ozon = """
+                UPDATE marking_codes 
+                SET "Маркетплейс" = 'Ozon' 
+                WHERE "Маркетплейс" IS NULL AND "Номер отправления" LIKE '%-%'
+                """
+                conn.execute(text(sql_ozon))
+
+                # 2. Если дефиса нет и это только цифры — это WB
+                # В SQLite нет сложной проверки на цифры, поэтому используем простую логику:
+                # Все, что осталось пустым после Ozon, помечаем как WB
+                sql_wb = """
+                UPDATE marking_codes 
+                SET "Маркетплейс" = 'WB' 
+                WHERE "Маркетплейс" IS NULL
+                """
+                conn.execute(text(sql_wb))
+
+            logging.info("База данных успешно пропатчена: Маркетплейсы распределены.")
+            return True
+        except Exception as e:
+            logging.error(f"Ошибка при патче базы данных: {e}")
+            return False

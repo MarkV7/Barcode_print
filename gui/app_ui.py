@@ -16,6 +16,7 @@ from gui.fbs_wb_gui import FBSModeWB
 from gui.fbs_ozon_gui import FBSModeOzon
 from gui.reports_gui import ReportsMode
 from gui.db_viewer_gui import DBViewerMode
+from gui.kiz_directory_gui import KizDirectoryMode
 import base64
 import logging
 
@@ -67,10 +68,12 @@ class AppUI:
         # Кнопки меню
         self.btns = {}
         btn_data = [
-            ("База данных стар.", self.show_database),
+            # ("База данных стар.", self.show_database),
             ("База данных (SQL)", self.show_db_viewer_page),
+            ("Справочник КИЗ", self.show_kiz_directory_page),
             ("Возврат на склад", self.show_return),
             ("ФБО Ozon", self.show_ozon),
+            # ("ФБО Ozon (New)", self.show_ozon2),
             ("ФБО Wildberries", self.show_wildberries),
             ("Wildberries ФБС", self.show_wildberries_fbs),
             ("Ozon ФБС", self.show_ozon_fbs),
@@ -378,6 +381,15 @@ class AppUI:
         self._clear_content()
         frame = ReportsMode(self.content_frame,
                              self.font_normal, self.db_manager, self.context)
+        frame.pack(fill="both", expand=True)
+        self.current_frame = frame
+    def show_kiz_directory_page(self):
+        """Переключение на просмотр базы данных из SQL"""
+        self._clear_content()
+
+        # Создаем фрейм. Передаем self.db_manager
+        frame = KizDirectoryMode(self.content_frame,
+                             self.font_normal, self.db_manager)
         frame.pack(fill="both", expand=True)
         self.current_frame = frame
 

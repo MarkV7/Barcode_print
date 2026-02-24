@@ -1066,23 +1066,26 @@ class FBSModeOzon(ctk.CTkFrame):
                     "Артикул поставщика": row["Артикул поставщика"],
                     "Размер": row["Размер"],
                     # ИСПРАВЛЕНИЕ: Вместо объекта Timestamp передаем готовую строку
-                    "Время добавления": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    "Время добавления": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "Маркетплейс":'Ozon'
                 }]).explode("Код маркировки", ignore_index=True)
             # ---------------------- block for self.app_context.df_cis -------------
-                if self.app_context.df_cis is None:
-                    self.app_context.df_cis = new_row.copy()
-                else:
-                    # Убедимся, что столбец существует с правильным типом, временная проверка
-                    if "Время добавления" not in self.app_context.df_cis.columns:
-                        self.app_context.df_cis["Время добавления"] = pd.NaT
-                        self.app_context.df_cis = self.app_context.df_cis.explode("Код маркировки", ignore_index=True)
-
-                    existing_codes = set(self.app_context.df_cis["Код маркировки"].dropna().astype(str))
-                    new_row_clean = new_row[~new_row["Код маркировки"].astype(str).isin(existing_codes)]
-                    if not new_row_clean.empty:
-                        self.app_context.df_cis = pd.concat([self.app_context.df_cis, new_row_clean], ignore_index=True)
-                self.show_log(
-                            f"Информация КИЗ записаны {marking_code} в Основной справочник КИЗ {row['Номер отправления']} и товара {row['sku']}.")
+            #     if self.app_context.df_cis is None:
+            #         self.app_context.df_cis = new_row.copy()
+            #     else:
+            #         # Убедимся, что столбец существует с правильным типом, временная проверка
+            #         if "Время добавления" not in self.app_context.df_cis.columns:
+            #             self.app_context.df_cis["Время добавления"] = pd.NaT
+            #             self.app_context.df_cis = self.app_context.df_cis.explode("Код маркировки", ignore_index=True)
+            #         if "Маркетплейс" not in self.app_context.df_cis.columns:
+            #             self.app_context.df_cis["Маркетплейс"] = ''
+            #
+            #         existing_codes = set(self.app_context.df_cis["Код маркировки"].dropna().astype(str))
+            #         new_row_clean = new_row[~new_row["Код маркировки"].astype(str).isin(existing_codes)]
+            #         if not new_row_clean.empty:
+            #             self.app_context.df_cis = pd.concat([self.app_context.df_cis, new_row_clean], ignore_index=True)
+            #     self.show_log(
+            #                 f"Информация КИЗ записаны {marking_code} в Основной справочник КИЗ {row['Номер отправления']} и товара {row['sku']}.")
                 # --- НОВЫЙ БЛОК: СИНХРОНИЗАЦИЯ С БД ---
                 try:
                     # Передаем только новые сформированные строки
