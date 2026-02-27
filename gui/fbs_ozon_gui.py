@@ -16,6 +16,7 @@ from printer_handler import LabelPrinter
 import logging
 import ast
 from db_manager import DBManager
+from gui.fbs_union_gui import UnionMark
 # from test_generate import generate_honest_sign_code as ghsc
 
 # -----------------------------------------------------------
@@ -56,7 +57,7 @@ logging.getLogger().addHandler(logging.StreamHandler())
 # Переменная для хранения имени файла с новыми ШК
 NEW_BARCODES_FILE = "new_barcodes.csv"
 
-class FBSModeOzon(ctk.CTkFrame):
+class FBSModeOzon(ctk.CTkFrame, UnionMark):
     """
     Виджет для сборки заказов Ozon (FBS).
     Включает логику сканирования, ручной сборки, создания поставки и печати этикеток.
@@ -101,7 +102,6 @@ class FBSModeOzon(ctk.CTkFrame):
         # --- Данные ---
         # 1. Создаем целевой DF с необходимыми колонками, инициализированный пустыми строками
         self.fbs_df = pd.DataFrame(columns=self.columns)
-        self.cis_df = pd.DataFrame(columns=("Номер отправления","Код маркировки","Цена","sku","Артикул поставщика","Размер","Время добавления"))
         if self.marketplace == 'Ozon':
             if hasattr(self.app_context, "fbs_table_ozon") and self.app_context.fbs_table_ozon is not None:
                 df = self.app_context.fbs_table_ozon.copy()
@@ -547,68 +547,68 @@ class FBSModeOzon(ctk.CTkFrame):
         # 4. Если это число или другой объект — превращаем в строку и кладем в список
         return [str(raw_value)]
 
-    def is_valid_chestny_znak(self, code: str) -> bool:
-        # Проверяем, содержит ли строка неправильный регистр в известных фиксированных частях
-        # Например: 91ee11 вместо 91EE11 — признак Caps Lock
-        if '91ee11' in code or '92ee' in code.lower():  # можно расширить
-            self.show_log('Отключите Casp Lock и сканируйте код маркировки еще раз')
-            return False
-        # Убираем спецсимволы разделители (FNC1 / GS / \x1d), если сканер их передает
-        clean_code = code.replace('\x1d', '').strip()
-
-        # Шаблон для полного кода (с криптохвостом)
-        # GTIN(14) + Serial(13-20) + (опционально 91(4) + 92(44/88))
-        # Обратите внимание: длина серийного номера бывает разной для разных товарных групп
-        # (обувь, одежда - 13, шины - 20, табак - 7 и т.д.), поэтому ставим {1,20}
-        pattern = r"^01(\d{14})21([\x21-\x7A]{1,20})(91[\x21-\x7A]{4}92[\x21-\x7A]{44,88})?$"
-
-        return bool(re.match(pattern, clean_code))
-
-    def is_valid_barcode(self, barcode: str) -> bool:
-        """
-        Проверяет, является ли строка валидным штрихкодом товара.
-
-        Поддерживаемые форматы:
-        - EAN-13: 13 цифр
-        - EAN-8: 8 цифр (опционально)
-        - UPC-A: 12 цифр (можно включить при необходимости)
-
-        По умолчанию — только EAN-13 (наиболее распространён в РФ).
-        """
-
-        if not isinstance(barcode, str):
-            return False
-        # Убираем возможные пробелы или дефисы (иногда встречаются)
-        barcode = barcode.strip().replace("-", "").replace(" ", "")
-
-        # Проверка длины и цифр
-        if not re.fullmatch(r"^\d{13}$", barcode):
-            return False
-
-        # Опционально: проверка контрольной суммы для EAN-13
-        return self.is_valid_ean13_checksum(barcode)
-
-    def is_valid_ean13_checksum(self,barcode: str) -> bool:
-        """
-        Проверяет контрольную сумму EAN-13.
-        Алгоритм:
-        - Сумма цифр на чётных позициях (2,4,6...) * 3
-        - Плюс сумма цифр на нечётных позициях (1,3,5...)
-        - Последняя цифра — контрольная
-        - Общая сумма должна быть кратна 10
-        """
-        if len(barcode) != 13 or not barcode.isdigit():
-            return False
-
-        digits = [int(d) for d in barcode]
-        # Позиции: 0-based, но в EAN-13 нумерация с 1 → чётные индексы = нечётные позиции
-        # Считаем: позиции 1,3,5,7,9,11 → индексы 0,2,4,6,8,10 → НЕЧЁТНЫЕ индексы в 0-based считаются как "чётные позиции"
-        # Правильный алгоритм:
-        sum_odd = sum(digits[i] for i in range(0, 12, 2))  # позиции 1,3,5,...,11 → индексы 0,2,...,10
-        sum_even = sum(digits[i] for i in range(1, 12, 2))  # позиции 2,4,...,12 → индексы 1,3,...,11
-        total = sum_odd + 3 * sum_even
-        check_digit = (10 - (total % 10)) % 10
-        return check_digit == digits[12]
+    # def is_valid_chestny_znak(self, code: str) -> bool:
+    #     # Проверяем, содержит ли строка неправильный регистр в известных фиксированных частях
+    #     # Например: 91ee11 вместо 91EE11 — признак Caps Lock
+    #     if '91ee11' in code or '92ee' in code.lower():  # можно расширить
+    #         self.show_log('Отключите Casp Lock и сканируйте код маркировки еще раз')
+    #         return False
+    #     # Убираем спецсимволы разделители (FNC1 / GS / \x1d), если сканер их передает
+    #     clean_code = code.replace('\x1d', '').strip()
+    #
+    #     # Шаблон для полного кода (с криптохвостом)
+    #     # GTIN(14) + Serial(13-20) + (опционально 91(4) + 92(44/88))
+    #     # Обратите внимание: длина серийного номера бывает разной для разных товарных групп
+    #     # (обувь, одежда - 13, шины - 20, табак - 7 и т.д.), поэтому ставим {1,20}
+    #     pattern = r"^01(\d{14})21([\x21-\x7A]{1,20})(91[\x21-\x7A]{4}92[\x21-\x7A]{44,88})?$"
+    #
+    #     return bool(re.match(pattern, clean_code))
+    #
+    # def is_valid_barcode(self, barcode: str) -> bool:
+    #     """
+    #     Проверяет, является ли строка валидным штрихкодом товара.
+    #
+    #     Поддерживаемые форматы:
+    #     - EAN-13: 13 цифр
+    #     - EAN-8: 8 цифр (опционально)
+    #     - UPC-A: 12 цифр (можно включить при необходимости)
+    #
+    #     По умолчанию — только EAN-13 (наиболее распространён в РФ).
+    #     """
+    #
+    #     if not isinstance(barcode, str):
+    #         return False
+    #     # Убираем возможные пробелы или дефисы (иногда встречаются)
+    #     barcode = barcode.strip().replace("-", "").replace(" ", "")
+    #
+    #     # Проверка длины и цифр
+    #     if not re.fullmatch(r"^\d{13}$", barcode):
+    #         return False
+    #
+    #     # Опционально: проверка контрольной суммы для EAN-13
+    #     return self.is_valid_ean13_checksum(barcode)
+    #
+    # def is_valid_ean13_checksum(self,barcode: str) -> bool:
+    #     """
+    #     Проверяет контрольную сумму EAN-13.
+    #     Алгоритм:
+    #     - Сумма цифр на чётных позициях (2,4,6...) * 3
+    #     - Плюс сумма цифр на нечётных позициях (1,3,5...)
+    #     - Последняя цифра — контрольная
+    #     - Общая сумма должна быть кратна 10
+    #     """
+    #     if len(barcode) != 13 or not barcode.isdigit():
+    #         return False
+    #
+    #     digits = [int(d) for d in barcode]
+    #     # Позиции: 0-based, но в EAN-13 нумерация с 1 → чётные индексы = нечётные позиции
+    #     # Считаем: позиции 1,3,5,7,9,11 → индексы 0,2,4,6,8,10 → НЕЧЁТНЫЕ индексы в 0-based считаются как "чётные позиции"
+    #     # Правильный алгоритм:
+    #     sum_odd = sum(digits[i] for i in range(0, 12, 2))  # позиции 1,3,5,...,11 → индексы 0,2,...,10
+    #     sum_even = sum(digits[i] for i in range(1, 12, 2))  # позиции 2,4,...,12 → индексы 1,3,...,11
+    #     total = sum_odd + 3 * sum_even
+    #     check_digit = (10 - (total % 10)) % 10
+    #     return check_digit == digits[12]
 
     def checkbox_event(self):
         logging.info("Checkbox toggled, current value:", self.check_var.get())
@@ -1069,24 +1069,9 @@ class FBSModeOzon(ctk.CTkFrame):
                     "Время добавления": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "Маркетплейс":'Ozon'
                 }]).explode("Код маркировки", ignore_index=True)
-            # ---------------------- block for self.app_context.df_cis -------------
-            #     if self.app_context.df_cis is None:
-            #         self.app_context.df_cis = new_row.copy()
-            #     else:
-            #         # Убедимся, что столбец существует с правильным типом, временная проверка
-            #         if "Время добавления" not in self.app_context.df_cis.columns:
-            #             self.app_context.df_cis["Время добавления"] = pd.NaT
-            #             self.app_context.df_cis = self.app_context.df_cis.explode("Код маркировки", ignore_index=True)
-            #         if "Маркетплейс" not in self.app_context.df_cis.columns:
-            #             self.app_context.df_cis["Маркетплейс"] = ''
-            #
-            #         existing_codes = set(self.app_context.df_cis["Код маркировки"].dropna().astype(str))
-            #         new_row_clean = new_row[~new_row["Код маркировки"].astype(str).isin(existing_codes)]
-            #         if not new_row_clean.empty:
-            #             self.app_context.df_cis = pd.concat([self.app_context.df_cis, new_row_clean], ignore_index=True)
-            #     self.show_log(
-            #                 f"Информация КИЗ записаны {marking_code} в Основной справочник КИЗ {row['Номер отправления']} и товара {row['sku']}.")
-                # --- НОВЫЙ БЛОК: СИНХРОНИЗАЦИЯ С БД ---
+
+                # ---  СИНХРОНИЗАЦИЯ С БД ---
+                # --- обновление marking_codes ---
                 try:
                     # Передаем только новые сформированные строки
                     self.db.sync_dataframe(new_row, "marking_codes", ["Код маркировки"])
@@ -1095,6 +1080,15 @@ class FBSModeOzon(ctk.CTkFrame):
                     self.show_log(f"Сохранены новые КМ в БД !!!")
                 except Exception as e:
                     self.show_log(f"Ошибка сохранения новых КМ в БД: {e}")
+                # --- обновление product_barcodes ---
+                try:
+                    # НОВОЕ: Извлечение и сохранение GTIN
+                    gtin = self.extract_gtin(marking_code)
+                    if gtin:
+                        self.update_product_gtin(self.db, row["Артикул поставщика"], row["Размер"], gtin)
+                        self.show_log(f"Сохранена информация в поле GTIN Справочника товаров")
+                except Exception as e:
+                    self.show_log(f"Ошибка сохранения в поле GTIN Справочника товаров: {e}")
                 # ---------------------------------------
             except Exception as e:
                 self.show_log(
@@ -1102,8 +1096,7 @@ class FBSModeOzon(ctk.CTkFrame):
                     is_error=True)
         else:
             # предусмотреть удаление строки по sku если есть запись
-            self.show_log(
-                f"КИЗ не  смог получить данные для записи в Основной справочник КИЗ {row['Номер отправления']} и товара {row['sku']}.")
+            self.show_log(f"Отсутствует КИЗ для {row['Номер заказа']} и товара {row['Штрихкод WB']}.")
 
     def handle_marking_input(self, marking_code: str):
         """Обрабатывает ввод кода маркировки, для поля автосборки"""
@@ -1253,21 +1246,6 @@ class FBSModeOzon(ctk.CTkFrame):
             return
         row = self.fbs_df.loc[self.selected_row_index]
         posting_number = row["Номер отправления"]
-        # ----- Блок Удаления из таблицы df_cis эти строки -------
-        # 1. Получаем список кодов из fbs_df (одна ячейка, тип — list)
-        codes_to_remove = self.fbs_df.at[self.selected_row_index, 'Код маркировки']
-        # Защита: если вдруг не список — приведём к списку
-        if not isinstance(codes_to_remove, list):
-            codes_to_remove = [codes_to_remove] if pd.notna(codes_to_remove) else []
-        # 2. Преобразуем в множество для быстрого поиска (опционально, но эффективно)
-        codes_set = set(codes_to_remove)
-        # 3. Создаём маску: оставляем только те строки, чей код НЕ в списке на удаление
-        mask = ~self.app_context.df_cis['Код маркировки'].isin(codes_set)
-        # mask2 = ~self.cis_df['Код маркировки'].isin(codes_set)
-        # 4. Применяем фильтрацию
-        self.app_context.df_cis = self.app_context.df_cis[mask].reset_index(drop=True)
-        # self.cis_df = self.cis_df[mask].reset_index(drop=True)
-        # ------ конец блока удаления ------
 
         # --- НОВЫЙ БЛОК: УДАЛЕНИЕ ИЗ БД ---
         self.db.delete_marking_codes_by_posting(posting_number)
@@ -1312,53 +1290,18 @@ class FBSModeOzon(ctk.CTkFrame):
         except Exception as e:
             self.show_log(f"Ошибка при сохранении в БД: {e}")
 
-        # 3. ОБРАБОТКА УСЛОВИЙ В ПАМЯТИ (app_context.df)
-        # Мы не используем цикл. Concat + drop_duplicates делает то же самое:
-        # Если строка совпадает по ключам, оставляем последнюю версию (т.е. обновленную)
-        if self.app_context.df is not None:
-            self.app_context.df = pd.concat([self.app_context.df, df_new]).drop_duplicates(
-                subset=["Артикул производителя", "Размер"],
-                keep='last'  # Важно: оставляем новую версию данных
-            ).reset_index(drop=True)
-        else:
-            self.app_context.df = df_new
-
-        self.show_log(f"✅ В базу данных записано строк: {len(df_new)}")
-
-
-        # # Ищем существующую запись *** в будущем добавить поиск по штрихкоду маркетплейса СТАРЫЙ КОД
-        # matches = self.app_context.df[
-        #     (self.app_context.df["Артикул производителя"].astype(str) == str(row["Артикул поставщика"])) &
-        #     (self.app_context.df["Размер"].astype(str) == str(row["Размер"]))
-        #     ]
-        #
-        # if not matches.empty:
-        #     # Обновляем существующую запись
-        #     idx = matches.index[0]
-        #     self.app_context.df.at[idx, "Штрихкод производителя"] = barcode
-        #     self.app_context.df.at[idx, "Штрихкод OZON"] = row['Штрихкод Ozon']
-        #     self.app_context.df.at[idx, "SKU OZON"] = row['sku']
-        #     # <- здесь надо обновление базы !!!
+        # # 3. ОБРАБОТКА УСЛОВИЙ В ПАМЯТИ (app_context.df)
+        # # Мы не используем цикл. Concat + drop_duplicates делает то же самое:
+        # # Если строка совпадает по ключам, оставляем последнюю версию (т.е. обновленную)
+        # if self.app_context.df is not None:
+        #     self.app_context.df = pd.concat([self.app_context.df, df_new]).drop_duplicates(
+        #         subset=["Артикул производителя", "Размер"],
+        #         keep='last'  # Важно: оставляем новую версию данных
+        #     ).reset_index(drop=True)
         # else:
+        #     self.app_context.df = df_new
         #
-        #     self.app_context.df = pd.concat([self.app_context.df, new_row], ignore_index=True)
-
-    def save_to_database(self):
-        """Сохраняет данные в основную базу данных файла Excel"""
-        #  в теории этот метод не нужен, так как по выходу, будет запрос о сохранении этой базы данных в файл
-        if self.app_context.df is None:
-            messagebox.showwarning("Ошибка", "Сначала загрузите основную базу данных.")
-            return
-
-        try:
-            # Сохраняем в Excel файл
-            if self.app_context.file_path:
-                self.app_context.df.to_excel(self.app_context.file_path, index=False)
-                self.show_log("✅ Данные сохранены в основную базу")
-            else:
-                self.show_log("⚠️ Путь к файлу не указан", is_error=True)
-        except Exception as e:
-            self.show_log(f"❌ Ошибка сохранения: {str(e)}", is_error=True)
+        # self.show_log(f"✅ В базу данных записано строк: {len(df_new)}")
 
     # --- МЕТОДЫ УПРАВЛЕНИЯ UI И ДАННЫМИ ---
     def load_active_orders(self):
@@ -2100,25 +2043,6 @@ class FBSModeOzon(ctk.CTkFrame):
             self.app_context.ozon_fbs_order_id = self.wb_supply_id_var.strip()
         except Exception as e:
             self.show_log(f"Ошибка сохранения контекста: {str(e)}", is_error=True)
-        # # ДУБЛИРОВАНИЕ В БД
-        # try:
-        #     # Сохраняем справочник товаров !!! Это надо поменять в будущем, убрать синронизацию целиком, а вводить только непосредственные изменения
-        #     if self.app_context.df is not None:
-        #         self.db.sync_dataframe(self.app_context.df, "product_barcodes", ["Артикул производителя", "Размер"])
-        #
-        #     # # Справочник маркировки
-        #     # if self.app_context.df_cis is not None:
-        #     #     self.db.sync_dataframe(self.app_context.df_cis, "marking_codes", ["Код маркировки"])
-        #
-        #     # Сохраняем текущую таблицу заказов Ozon
-        #     # if self.fbs_df is not None:
-        #     #     # self.db.sync_dataframe(self.fbs_df, "ozon_fbs_orders")
-        #     #     self.db.upsert_ozon_orders(self.fbs_df)
-        #
-        #     # self.show_log("✅ Данные успешно продублированы в SQLite")
-        # except Exception as e:
-        #     self.show_log(f"Ошибка дублирования в БД: {e}", is_error=True)
-
 
     def on_wb_supply_entry_focus_in(self, event=None):
         self.editing = True

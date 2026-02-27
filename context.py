@@ -3,11 +3,10 @@ import os
 import json
 import pickle
 
-
 class AppContext:
     def __init__(self):
-        self.df: pd.DataFrame = None  # Данные из Excel
-        self.df_barcode_WB: pd.DataFrame = None  # Данные из Excel
+        self.df: pd.DataFrame = None  # Данные из Excel -> готовим к удалению
+        self.df_barcode_WB: pd.DataFrame = None  # Данные из Excel -> готовим к удалению
         self.file_path: str = None   # Путь к файлу
         self.file_path2: str = None  # Путь к файлу База штрихкодов WB
         self.return_table_df: pd.DataFrame = None  # Таблица возврата
@@ -15,7 +14,6 @@ class AppContext:
         self.fbo_table_wb: pd.DataFrame = None
         self.fbs_table: pd.DataFrame = None  # Таблица FBS сборки WB
         self.fbs_table_ozon: pd.DataFrame = None  # Таблица FBS сборки Ozon
-        self.df_cis: pd.DataFrame = None  # Таблица Кодов маркировки
         self.ozon_fbs_order_id = ''
         self.wb_fbs_supply_id = ''
         self.printer_name: str = 'по умолчанию'
@@ -23,48 +21,6 @@ class AppContext:
         self.ozon_client_id: str = ''
         self.ozon_api_key: str = ''
 
-    def save_df_to_parquet(self, filename: str = "data.parquet", subdir: str = "Data"):
-        """
-        Сохраняет датафрейм из self.context.df_cis в формат .parquet
-        по указанному пути: subdir/filename
-        """
-        # Путь к файлу
-        filepath = os.path.join(subdir, filename)
-
-        # Создаём директорию, если её нет
-        os.makedirs(subdir, exist_ok=True)
-
-        # Проверяем, что датафрейм существует
-        if self.df_cis is not None:
-            try:
-                # Сохраняем в формате Parquet
-                self.df_cis.to_parquet(filepath, index=False, engine='pyarrow')
-                print(f"✅ Данные успешно сохранены в {filepath}")
-            except Exception as e:
-                print(f"❌ Ошибка при сохранении в Parquet: {e}")
-        else:
-            print("⚠️ Нет данных для сохранения в Parquet")
-
-    def load_df_from_parquet(self, filename: str = "data.parquet", subdir: str = "Data"):
-        """
-        Загружает датафрейм из файла .parquet и сохраняет в self.context.df_cis
-        по пути: subdir/filename
-        """
-        filepath = os.path.join(subdir, filename)
-
-        if os.path.exists(filepath):
-            try:
-                # Загружаем датафрейм из Parquet
-                df = pd.read_parquet(filepath, engine='pyarrow')
-                self.df_cis = df
-                print(f"✅ Данные успешно загружены из {filepath}")
-                return df
-            except Exception as e:
-                print(f"❌ Ошибка при загрузке из Parquet: {e}")
-                return None
-        else:
-            print(f"⚠️ Файл {filepath} не найден")
-            return None
 
     def save_to_file(self, filepath: str):
         """
@@ -85,7 +41,6 @@ class AppContext:
             "fbo_table_wb": self.fbo_table_wb.to_dict(orient='records') if isinstance(self.fbo_table_wb, pd.DataFrame) else None,
             "fbs_table": self.fbs_table.to_dict(orient='records') if isinstance(self.fbs_table, pd.DataFrame) else None,
             "fbs_table_ozon": self.fbs_table_ozon.to_dict(orient='records') if isinstance(self.fbs_table_ozon, pd.DataFrame) else None,
-            "df_cis": self.df_cis.to_dict(orient='records') if isinstance(self.df_cis, pd.DataFrame) else None,
             "ozon_fbs_order_id": getattr(self, "ozon_fbs_order_id", ""),
             "wb_fbs_supply_id": getattr(self, "wb_fbs_supply_id", "")
         }
@@ -131,7 +86,6 @@ class AppContext:
             self.fbo_table_wb = pd.DataFrame(data["fbo_table_wb"]) if data.get("fbo_table_wb") else None
             self.fbs_table = pd.DataFrame(data["fbs_table"]) if data.get("fbs_table") else None
             self.fbs_table_ozon = pd.DataFrame(data["fbs_table_ozon"]) if data.get("fbs_table_ozon") else None
-            self.df_cis = pd.DataFrame(data["df_cis"]) if data.get("df_cis") else None
             self.ozon_fbs_order_id = data.get("ozon_fbs_order_id", "")
             self.wb_fbs_supply_id = data.get("wb_fbs_supply_id", "")
 

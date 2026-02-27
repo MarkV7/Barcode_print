@@ -17,7 +17,7 @@ class ReportsMode(ctk.CTkFrame):
         self.app_context = app_context
 
         # Внутри __init__ ReportsMode временно, через некоторое время удалить
-        self.db.patch_marketplace_column()
+        # self.db.patch_marketplace_column()
 
         # Заголовок страницы
         self.title_label = ctk.CTkLabel(self, text="Отчеты", font=ctk.CTkFont(size=26, weight="bold"))
@@ -362,6 +362,7 @@ class ReportsMode(ctk.CTkFrame):
         self.sync_btn = ctk.CTkButton(
             block,
             text="🔄 Обновить статусы\n(API WB/Ozon)",
+            height=40,
             command=self.start_sync_statuses,
             fg_color="#2c3e50"
         )
@@ -374,7 +375,8 @@ class ReportsMode(ctk.CTkFrame):
 
         self.export_cz_btn = ctk.CTkButton(
             block,
-            text="📑 Экспорт для ЧЗ\n(Выкупленные)",
+            text="📑 Экспорт для MarkZnak\n(Выкупленные)",
+            height=40,
             command=self.export_for_znak,
             fg_color="#27ae60"
         )
@@ -385,8 +387,37 @@ class ReportsMode(ctk.CTkFrame):
         self.export_progress.pack(fill="x", padx=20, pady=(0, 10))
         self.export_progress.set(0)
 
+        self.gtin_sync_btn = ctk.CTkButton(
+            block,
+            text="🔄 Собрать GTIN из архива КИЗ",
+            height=40,
+            command=self.start_gtin_sync
+        )
+        self.gtin_sync_btn.pack(fill="x", padx=20, pady=10)
+
+        self.gtin_progress = ctk.CTkProgressBar(block)
+        self.gtin_progress.set(0)
+        self.gtin_progress.pack(fill="x", padx=20, pady=(0, 10))
+
         self.sync_label = ctk.CTkLabel(block, text="Статус: готов к работе", font=ctk.CTkFont(size=12))
         self.sync_label.pack(pady=10)
+
+    def start_gtin_sync(self):
+        self.gtin_sync_btn.configure(state="disabled")
+        threading.Thread(target=self.run_gtin_sync, daemon=True).start()
+
+    def run_gtin_sync(self):
+        try:
+            # Вызываем метод из db_manager
+            for progress in self.db.sync_gtins_from_history():
+                self.gtin_progress.set(progress)
+
+            messagebox.showinfo("Готово", "GTIN успешно синхронизированы на основе истории КИЗ!")
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Произошел сбой: {e}")
+        finally:
+            self.gtin_sync_btn.configure(state="normal")
+            self.gtin_progress.set(0)
 
     def start_sync_statuses(self):
         self.sync_btn.configure(state="disabled")
@@ -612,7 +643,7 @@ class ReportsMode(ctk.CTkFrame):
             logging.debug(f"Статус Ozon '{ozon_status}' пропущен (не финальный)")
         return None
 
-    def export_for_znak(self):
+    def export_for_znak_old(self):
         """
         Экспорт выкупленных КИЗ для Честного Знака.
         Выгружает только коды со статусом 'Выкуплен' в формате CSV.
@@ -673,3 +704,83 @@ class ReportsMode(ctk.CTkFrame):
 
         # Запускаем в отдельном потоке, чтобы прогрессбар плавно работал
         threading.Thread(target=run_export, daemon=True).start()
+
+    def export_for_znak(self):
+        """Экспорт выкупленных КИЗ в формате CSV для Markznak"""
+        # Сразу блокируем кнопку, чтобы не нажать дважды
+        self.export_cz_btn.configure(state="disabled")
+        self.sync_label.configure(text="⏳ Подготовка...")
+        self.export_progress.set(0.1)
+
+        # 1. Диалог выбора файла (должен быть в основном потоке)
+        try:
+            initial_name = f"Markznak_Export_{datetime.now().strftime('%Y-%m-%d')}.csv"
+            file_path = filedialog.asksaveasfilename(
+                defaultextension=".csv",
+                filetypes=[("CSV файлы", "*.csv")],
+                initialfile=initial_name,
+                title="Сохранить экспорт для Markznak"
+            )
+        except Exception as e:
+            logging.error(f"Ошибка вызова диалога: {e}")
+            self.export_cz_btn.configure(state="normal")
+            return
+
+        if not file_path:
+            self.export_cz_btn.configure(state="normal")
+            self.sync_label.configure(text="Статус: отменено")
+            self.export_progress.set(0)
+            return
+
+        def worker():
+            try:
+                # 2. Запрос данных
+                # Проверяем наличие нужных колонок в БД через запрос
+                query = text('''
+                    SELECT 
+                        "Код маркировки" AS "КИ (код идентификации)",
+                        "Цена" AS "Цена",
+                        "Номер отправления" AS "Номер чека"
+                    FROM marking_codes
+                    WHERE "Статус" = 'Выкуплен'
+                ''')
+
+                df = pd.read_sql(query, self.db.engine)
+
+                if df.empty:
+                    self.after(0, lambda: messagebox.showwarning("Пусто", "Нет данных со статусом 'Выкуплен'"))
+                    return
+
+                # --- ЗАЩИТА ОТ ЗАВИСАНИЯ (Обработка данных) ---
+                # Заполняем пустые значения, чтобы .str.replace не вызвал ошибку
+                df["КИ (код идентификации)"] = df["КИ (код идентификации)"].fillna("").astype(str)
+                df["Цена"] = df["Цена"].fillna(0)
+                df["Номер чека"] = df["Номер чека"].fillna("").astype(str)
+
+                # Заменяем спецсимвол GS (разделитель групп) на текстовый код для Markznak
+                df["КИ (код идентификации)"] = df["КИ (код идентификации)"].str.replace('\x1d', '_x001d_', regex=False)
+
+                # 3. Сохранение
+                # utf-8-sig — чтобы Excel и Markznak корректно читали кириллицу
+                df.to_csv(file_path, index=False, header=True, encoding='utf-8-sig', sep=',')
+
+                # 4. Успешное завершение
+                count = len(df)
+                self.after(0, lambda: self.export_progress.set(1.0))
+                self.after(0, lambda: self.sync_label.configure(text="✅ Готово"))
+                self.after(0, lambda: messagebox.showinfo("Успех", f"Успешно экспортировано {count} строк."))
+
+            except Exception as e:
+                # Если что-то пошло не так в потоке — выводим ошибку
+                logging.error(f"КРИТИЧЕСКАЯ ОШИБКА ЭКСПОРТА: {e}", exc_info=True)
+                self.after(0, lambda: messagebox.showerror("Ошибка потока", f"Произошла ошибка при сборке файла:\n{e}"))
+
+            finally:
+                # В ЛЮБОМ СЛУЧАЕ возвращаем кнопку в рабочее состояние
+                self.after(500, lambda: self.export_cz_btn.configure(state="normal"))
+                self.after(3000, lambda: self.export_progress.set(0))
+                self.after(3000, lambda: self.sync_label.configure(text="Статус: готов к работе"))
+
+        # Запуск потока
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()

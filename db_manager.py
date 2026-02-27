@@ -10,6 +10,7 @@ class DBManager:
         # База данных будет создана в корневой папке проекта как файл
         self.engine = create_engine(f'sqlite:///{db_name}')
         self.init_tables()
+        # self.migrate_add_gtin_column()
 
     def init_tables(self):
         """Создание таблиц, если они не существуют"""
@@ -27,6 +28,7 @@ class DBManager:
                 "Баркод  Wildberries" TEXT,
                 "Коробка" TEXT,
                 "SKU OZON" TEXT,
+                "GTIN" TEXT,
                 PRIMARY KEY ("Артикул производителя", "Размер")
             )
             """,
@@ -95,6 +97,15 @@ class DBManager:
             logging.info("DB: Таблицы SQLite инициализированы.")
         except Exception as e:
             logging.error(f"DB: Ошибка инициализации таблиц: {e}")
+
+    # Добавьте этот вызов в ваш класс DatabaseManager или выполните один раз
+    def migrate_add_gtin_column(self):
+        with self.engine.begin() as conn:
+            try:
+                conn.execute(text('ALTER TABLE product_barcodes ADD COLUMN "GTIN" TEXT'))
+                logging.info("Столбец GTIN успешно добавлен в product_barcodes")
+            except Exception as e:
+                logging.warning(f"Столбец GTIN вероятно уже существует: {e}")
 
     def _migrate_marking_codes(self):
         """Добавляет недостающие колонки в существующую таблицу"""
@@ -579,25 +590,6 @@ class DBManager:
             logging.error(f"Ошибка восстановления БД: {e}")
             return False, str(e)
 
-    def deduplicate_product_barcodes(self):
-        """Объединяет дубликаты, схлопывая данные в одну строку"""
-        try:
-            with self.engine.connect() as conn:
-                # 1. Получаем все данные
-                df = pd.read_sql_table("product_barcodes", conn)
-                # 2. Группируем по ключам и выбираем первое непустое значение для каждой колонки (first non-null)
-                # Это 'умное' объединение
-                df_clean = df.groupby(["Артикул производителя", "Размер"], as_index=False).first()
-
-                # 3. Пересоздаем таблицу
-                conn.execute(text("DELETE FROM product_barcodes"))
-                df_clean.to_sql("product_barcodes", conn, if_exists="append", index=False)
-                conn.commit()
-            return True, len(df) - len(df_clean)  # Возвращаем кол-во удаленных дублей
-        except Exception as e:
-            logging.error(f"Ошибка дедупликации: {e}")
-            return False, str(e)
-
     def patch_marketplace_column(self):
         """Автоматически заполняет колонку Маркетплейс для старых записей"""
         try:
@@ -625,3 +617,121 @@ class DBManager:
         except Exception as e:
             logging.error(f"Ошибка при патче базы данных: {e}")
             return False
+
+    def sync_gtins_from_history(self):
+        """Генератор для синхронизации GTIN из всех существующих КИЗ"""
+        try:
+            # 1. Получаем все КИЗ и связку с товаром
+            with self.engine.connect() as conn:
+                query = text('''
+                    SELECT "Код маркировки", "Артикул поставщика", "Размер" 
+                    FROM marking_codes 
+                    WHERE "Код маркировки" IS NOT NULL
+                ''')
+                records = conn.execute(query).fetchall()
+
+            if not records:
+                return
+
+            total = len(records)
+            for i, (kiz, art, size) in enumerate(records):
+                # ПРОВЕРКА: Если артикул или размер пустые — пропускаем эту итерацию
+                if not art or str(art).strip() == "" or not size or str(size).strip() == "":
+                    continue
+                # Извлекаем GTIN (первые 14 цифр после '01')
+                gtin = None
+                if kiz.startswith('01') and len(kiz) > 16:
+                    # Согласно GS1, GTIN — это 14 цифр после AI '01'
+                    gtin = kiz[2:16]
+
+                if gtin:
+                    # Записываем в БД через UPDATE
+                    with self.engine.begin() as conn_upd:
+                        # Проверяем текущий GTIN, чтобы не дублировать
+                        check = conn_upd.execute(text(
+                            'SELECT "GTIN" FROM product_barcodes WHERE "Артикул производителя" = :art AND "Размер" = :sz'
+                        ), {"art": art, "sz": size}).scalar()
+
+                        current_gtins = str(check) if check else ""
+                        if gtin not in current_gtins:
+                            new_gtin_val = f"{current_gtins}, {gtin}".strip(", ")
+                            conn_upd.execute(text('''
+                                UPDATE product_barcodes 
+                                SET "GTIN" = :gtin 
+                                WHERE "Артикул производителя" = :art AND "Размер" = :sz
+                            '''), {"gtin": new_gtin_val, "art": art, "sz": size})
+
+                # Отдаем прогресс (от 0 до 1)
+                yield (i + 1) / total
+
+        except Exception as e:
+            logging.error(f"Ошибка синхронизации GTIN: {e}")
+            yield 1.0
+
+    def cleanup_empty_product_records(self):
+        """Вспомогательный метод: удаляет строки с пустыми ключевыми полями"""
+        try:
+            with self.engine.begin() as conn:
+                # Удаляем строки, где и Артикул, и Размер пусты или состоят из пробелов
+                query = text('''
+                    DELETE FROM product_barcodes 
+                    WHERE (TRIM("Артикул производителя") = '' OR "Артикул производителя" IS NULL)
+                      AND (TRIM("Размер") = '' OR "Размер" IS NULL)
+                ''')
+                result = conn.execute(query)
+                return result.rowcount
+        except Exception as e:
+            logging.error(f"Ошибка очистки пустых строк: {e}")
+            return 0
+
+    def deduplicate_product_barcodes_new(self):
+        """Полная очистка: сначала удаляем пустые записи, затем дубликаты"""
+        try:
+            # 1. Сначала чистим 'призраков' (пустые строки)
+            removed_empty = self.cleanup_empty_product_records()
+            if removed_empty > 0:
+                logging.info(f"Очистка БД: Удалено {removed_empty} пустых строк-призраков.")
+
+            # 2. Теперь запускаем  стандартную логику дедупликации
+            with self.engine.begin() as conn:
+                # Пример логики удаления дублей, оставляя строку с максимальным кол-вом данных
+                query = text('''
+                    DELETE FROM product_barcodes 
+                    WHERE rowid NOT IN (
+                        SELECT MIN(rowid) 
+                        FROM product_barcodes 
+                        GROUP BY "Артикул производителя", "Размер"
+                    )
+                ''')
+                result = conn.execute(query)
+                total_removed = result.rowcount + removed_empty
+
+            return True, total_removed
+        except Exception as e:
+            logging.error(f"Ошибка дедупликации: {e}")
+            return False, str(e)
+
+    def deduplicate_product_barcodes(self):
+        """Объединяет дубликаты, схлопывая данные в одну строку"""
+        try:
+            # 1. Сначала чистим 'призраков' (пустые строки)
+            removed_empty = self.cleanup_empty_product_records()
+            if removed_empty > 0:
+                logging.info(f"Очистка БД: Удалено {removed_empty} пустых строк-призраков.")
+
+            # 2. Теперь запускаем  стандартную логику дедупликации
+            with self.engine.connect() as conn:
+                # 1. Получаем все данные
+                df = pd.read_sql_table("product_barcodes", conn)
+                # 2. Группируем по ключам и выбираем первое непустое значение для каждой колонки (first non-null)
+                # Это 'умное' объединение
+                df_clean = df.groupby(["Артикул производителя", "Размер"], as_index=False).first()
+
+                # 3. Пересоздаем таблицу
+                conn.execute(text("DELETE FROM product_barcodes"))
+                df_clean.to_sql("product_barcodes", conn, if_exists="append", index=False)
+                conn.commit()
+            return True, len(df) - len(df_clean)  # Возвращаем кол-во удаленных дублей
+        except Exception as e:
+            logging.error(f"Ошибка дедупликации: {e}")
+            return False, str(e)
