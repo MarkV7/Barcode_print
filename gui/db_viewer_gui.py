@@ -3,7 +3,10 @@ import pandas as pd
 from tkinter import messagebox
 from gui.gui_table2 import EditableDataTable
 from sqlalchemy import text
+import logging
 
+# Создаем логгер для конкретного модуля
+logger = logging.getLogger(__name__)
 
 class DBViewerMode(ctk.CTkFrame):
     def __init__(self, parent, font, db_manager):
@@ -270,11 +273,11 @@ class DBViewerMode(ctk.CTkFrame):
                     conn.execute(query, params)
 
             import logging
-            logging.info("База SQL: Изменения в product_barcodes успешно сохранены.")
+            logger.info("База SQL: Изменения в product_barcodes успешно сохранены.")
             messagebox.showinfo("Успех", "Данные товаров успешно обновлены!")
             self.load_data_from_db()  # Перезагрузка для чистоты данных
 
         except Exception as e:
             import logging
-            logging.error(f"Ошибка сохранения БД товаров: {e}", exc_info=True)
+            logger.error(f"Ошибка сохранения БД товаров: {e}", exc_info=True)
             messagebox.showerror("Ошибка", f"Не удалось сохранить изменения:\n{e}")

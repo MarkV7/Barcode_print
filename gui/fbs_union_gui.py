@@ -1,7 +1,8 @@
 import re
 from sqlalchemy import text
 import logging
-
+# Создаем логгер для конкретного модуля
+logger = logging.getLogger(__name__)
 
 class UnionMark:
     """Базовый класс для общих операций маркировки FBS"""
@@ -28,7 +29,7 @@ class UnionMark:
                 return gtin if gtin.isdigit() else None
 
         except Exception as e:
-            logging.error(f"Ошибка парсинга GTIN из {marking_code}: {e}")
+            logger.error(f"Ошибка парсинга GTIN из {marking_code}: {e}")
         return None
 
     def update_product_gtin(self, db_manager, vendor_code, size, gtin):
@@ -54,9 +55,9 @@ class UnionMark:
                         WHERE "Артикул производителя" = :art AND "Размер" = :sz
                     ''')
                     conn.execute(update_query, {"gtin": new_val, "art": vendor_code, "sz": size})
-                    logging.info(f"GTIN {gtin} обновлен для {vendor_code}")
+                    logger.info(f"GTIN {gtin} обновлен для {vendor_code}")
         except Exception as e:
-            logging.error(f"Ошибка записи GTIN в БД: {e}")
+            logger.error(f"Ошибка записи GTIN в БД: {e}")
 
     def is_valid_chestny_znak(self, code: str) -> bool:
         # Проверяем, содержит ли строка неправильный регистр в известных фиксированных частях

@@ -4,6 +4,8 @@ import logging
 import os
 from typing import Dict, List, Optional
 from datetime import datetime
+# Создаем логгер для конкретного модуля
+logger = logging.getLogger(__name__)
 
 class DBManager:
     def __init__(self, db_name="barcode_print.db"):
@@ -94,18 +96,18 @@ class DBManager:
                     conn.execute(text(cmd))
             # Запускаем проверку на случай, если таблица уже была создана старой версией
             self._migrate_marking_codes()
-            logging.info("DB: Таблицы SQLite инициализированы.")
+            logger.info("DB: Таблицы SQLite инициализированы.")
         except Exception as e:
-            logging.error(f"DB: Ошибка инициализации таблиц: {e}")
+            logger.error(f"DB: Ошибка инициализации таблиц: {e}")
 
     # Добавьте этот вызов в ваш класс DatabaseManager или выполните один раз
     def migrate_add_gtin_column(self):
         with self.engine.begin() as conn:
             try:
                 conn.execute(text('ALTER TABLE product_barcodes ADD COLUMN "GTIN" TEXT'))
-                logging.info("Столбец GTIN успешно добавлен в product_barcodes")
+                logger.info("Столбец GTIN успешно добавлен в product_barcodes")
             except Exception as e:
-                logging.warning(f"Столбец GTIN вероятно уже существует: {e}")
+                logger.warning(f"Столбец GTIN вероятно уже существует: {e}")
 
     def _migrate_marking_codes(self):
         """Добавляет недостающие колонки в существующую таблицу"""
@@ -123,10 +125,10 @@ class DBManager:
 
                 for col_name, col_type in new_columns.items():
                     if col_name not in existing_columns:
-                        logging.info(f"Миграция БД: Добавление колонки {col_name} в marking_codes")
+                        logger.info(f"Миграция БД: Добавление колонки {col_name} в marking_codes")
                         conn.execute(text(f'ALTER TABLE marking_codes ADD COLUMN "{col_name}" {col_type}'))
         except Exception as e:
-            logging.error(f"Ошибка миграции marking_codes: {e}")
+            logger.error(f"Ошибка миграции marking_codes: {e}")
 
     def update_kiz_status(self, marking_code: str, status: str, sale_date: str = None):
         """Метод для обновления статуса КИЗ после синхронизации с API"""
@@ -142,8 +144,22 @@ class DBManager:
                 conn.execute(text(sql), {"status": status, "sale_date": sale_date, "code": marking_code})
             return True
         except Exception as e:
-            logging.error(f"Ошибка обновления статуса КИЗ {marking_code}: {e}")
+            logger.error(f"Ошибка обновления статуса КИЗ {marking_code}: {e}")
             return False
+
+    def update_kiz_status_and_price(self, kiz_code, status, price):
+        """Обновляет одновременно и статус, и цену товара"""
+        # Если цена пришла пустая (None), обновляем только статус
+        if price is None:
+            query = text('UPDATE marking_codes SET "Статус" = :status WHERE "Код маркировки" = :kiz')
+            params = {"status": status, "kiz": kiz_code}
+        else:
+            query = text('UPDATE marking_codes SET "Статус" = :status, "Цена" = :price WHERE "Код маркировки" = :kiz')
+            params = {"status": status, "price": price, "kiz": kiz_code}
+
+        with self.engine.connect() as conn:
+            conn.execute(query, params)
+            conn.commit()
 
     def sync_dataframe(self, df: pd.DataFrame, table_name: str, key_columns: list):
         """
@@ -181,7 +197,7 @@ class DBManager:
                     conn.execute(text(sql), params)
                 conn.commit()
         except Exception as e:
-            logging.error(f"Ошибка UPSERT в таблицу {table_name}: {e}")
+            logger.error(f"Ошибка UPSERT в таблицу {table_name}: {e}")
             raise e
 
     def upsert_ozon_orders(self, df: pd.DataFrame):
@@ -191,9 +207,9 @@ class DBManager:
             # На 1 этапе используем простую перезапись таблицы заказов,
             # так как fbs_df всегда содержит актуальное состояние.
             self.sync_dataframe(df, "ozon_fbs_orders", ["Номер отправления"])
-            logging.info(f"DB: Таблица ozon_fbs_orders успешно перезаписана ({len(df)} строк).")
+            logger.info(f"DB: Таблица ozon_fbs_orders успешно перезаписана ({len(df)} строк).")
         except Exception as e:
-            logging.error(f"DB: Ошибка перезаписи ozon_fbs_orders: {e}")
+            logger.error(f"DB: Ошибка перезаписи ozon_fbs_orders: {e}")
 
     def upsert_wb_orders(self, df: pd.DataFrame):
         """Специфический метод для WB: вставка или обновление существующих заказов"""
@@ -202,9 +218,9 @@ class DBManager:
             # На 1 этапе используем простую перезапись таблицы заказов,
             # так как fbs_df всегда содержит актуальное состояние.
             self.sync_dataframe(df, "wb_fbs_orders",["Номер заказа"])
-            logging.info(f"DB: Таблица wb_fbs_orders успешно перезаписана ({len(df)} строк).")
+            logger.info(f"DB: Таблица wb_fbs_orders успешно перезаписана ({len(df)} строк).")
         except Exception as e:
-            logging.error(f"DB: Ошибка перезаписи wb_fbs_orders: {e}")
+            logger.error(f"DB: Ошибка перезаписи wb_fbs_orders: {e}")
 
     def add_marking_code(self, posting_number, cis_code, price, sku, article, size):
         """Мгновенная вставка или обновление одной маркировки"""
@@ -217,7 +233,7 @@ class DBManager:
             with self.engine.begin() as conn:
                 conn.execute(text(sql), (posting_number, cis_code, price, sku, article, size))
         except Exception as e:
-            logging.error(f"DB Error (add_marking): {e}")
+            logger.error(f"DB Error (add_marking): {e}")
 
     def upsert_marking_codes(self, df: pd.DataFrame):
         """Сохранение кодов маркировки в БД (UPSERT)"""
@@ -262,10 +278,10 @@ class DBManager:
                         "add_time": add_time
                     }
                     conn.execute(text(sql), params)
-            logging.info("КИЗ успешно синхронизированы с БД")
+            logger.info("КИЗ успешно синхронизированы с БД")
             return True
         except Exception as e:
-            logging.error(f"Ошибка UPSERT в таблицу marking_codes: {e}")
+            logger.error(f"Ошибка UPSERT в таблицу marking_codes: {e}")
             return False
 
     def delete_marking_code(self, cis_code):
@@ -275,7 +291,7 @@ class DBManager:
             with self.engine.begin() as conn:
                 conn.execute(text(sql), {"cis": cis_code})
         except Exception as e:
-            logging.error(f"DB Error (delete_marking): {e}")
+            logger.error(f"DB Error (delete_marking): {e}")
 
     def delete_marking_codes_by_posting(self, posting_number):
         """Удаление всех кодов маркировки для конкретного отправления"""
@@ -283,9 +299,9 @@ class DBManager:
         try:
             with self.engine.begin() as conn:
                 conn.execute(text(sql), {"posting": posting_number})
-            logging.info(f"DB: Удалены КМ для отправления {posting_number}")
+            logger.info(f"DB: Удалены КМ для отправления {posting_number}")
         except Exception as e:
-            logging.error(f"DB Error (delete_marking_by_posting): {e}")
+            logger.error(f"DB Error (delete_marking_by_posting): {e}")
 
     # Добавить в db_manager.py
 
@@ -303,7 +319,7 @@ class DBManager:
             with self.engine.begin() as conn:
                 conn.execute(text(sql), data_dict)
         except Exception as e:
-            logging.error(f"DB Error (update_barcode_record): {e}")
+            logger.error(f"DB Error (update_barcode_record): {e}")
 
 
     def get_product_by_article_and_size(self, article: str, size: str) -> Optional[dict]:
@@ -326,7 +342,7 @@ class DBManager:
                     return dict(row._mapping)
                 return None
         except Exception as e:
-            logging.error(f"DB Error (get_product): {e}")
+            logger.error(f"DB Error (get_product): {e}")
             return None
 
     def update_fbs_order_status(self, table_name: str, key_col: str, key_value: str, status_processing: str,
@@ -347,7 +363,7 @@ class DBManager:
                     "id": key_value
                 })
         except Exception as e:
-            logging.error(f"Ошибка обновления строки в {table_name}: {e}")
+            logger.error(f"Ошибка обновления строки в {table_name}: {e}")
 
     def get_products_by_articles(self, articles: list, columns: list = None) -> pd.DataFrame:
         """
@@ -370,7 +386,7 @@ class DBManager:
         try:
             return pd.read_sql_query(text(sql), self.engine, params=params)
         except Exception as e:
-            logging.error(f"Ошибка при получении данных из БД: {e}")
+            logger.error(f"Ошибка при получении данных из БД: {e}")
             return pd.DataFrame()
 
     def get_products_by_skus(self, skus: list) -> pd.DataFrame:
@@ -399,7 +415,7 @@ class DBManager:
                 # Если результат пустой, возвращаем структуру с колонками
                 return res if not res.empty else empty_df
         except Exception as e:
-            logging.error(f"Ошибка получения по SKU: {e}")
+            logger.error(f"Ошибка получения по SKU: {e}")
             return empty_df
 
     def get_products_by_wb_barcodes(self, barcodes: list) -> pd.DataFrame:
@@ -430,7 +446,7 @@ class DBManager:
                 res = pd.read_sql_query(text(sql), conn, params=params)
                 return res if not res.empty else empty_df
         except Exception as e:
-            logging.error(f"Ошибка DB WB: {e}")
+            logger.error(f"Ошибка DB WB: {e}")
             return empty_df
 
     # Добавить в db_manager.py
@@ -445,7 +461,7 @@ class DBManager:
             with self.engine.connect() as conn:
                 return pd.read_sql_query(text(sql), conn, params={"start": start_date, "end": end_date})
         except Exception as e:
-            logging.error(f"Ошибка экспорта маркировки: {e}")
+            logger.error(f"Ошибка экспорта маркировки: {e}")
             return pd.DataFrame()
 
     def get_all_product_barcodes(self) -> pd.DataFrame:
@@ -453,7 +469,7 @@ class DBManager:
         try:
             return pd.read_sql_query('SELECT * FROM product_barcodes', self.engine)
         except Exception as e:
-            logging.error(f"Ошибка экспорта штрихкодов: {e}")
+            logger.error(f"Ошибка экспорта штрихкодов: {e}")
             return pd.DataFrame()
 
     def import_product_barcodes_old(self, df: pd.DataFrame):
@@ -471,7 +487,7 @@ class DBManager:
                     conn.execute(text(sql), data)
             return True, len(df)
         except Exception as e:
-            logging.error(f"Ошибка импорта: {e}")
+            logger.error(f"Ошибка импорта: {e}")
             return False, str(e)
 
     def import_product_barcodes(self, df: pd.DataFrame, progress_callback=None):
@@ -511,7 +527,7 @@ class DBManager:
 
             return True, total_rows
         except Exception as e:
-            logging.error(f"Ошибка импорта: {e}")
+            logger.error(f"Ошибка импорта: {e}")
             return False, str(e)
 
     def delete_product_barcode(self, vendor_code: str, size: str) -> bool:
@@ -523,12 +539,21 @@ class DBManager:
                 conn.commit()
             return True
         except Exception as e:
-            logging.error(f"Ошибка удаления записи: {e}")
+            logger.error(f"Ошибка удаления записи: {e}")
             return False
 
     def get_product_by_wb_barcode(self, barcode: str) -> pd.DataFrame:
         """Поиск товара по Баркоду WB"""
         sql = 'SELECT * FROM product_barcodes WHERE "Баркод  Wildberries" = :b'
+        with self.engine.connect() as conn:
+            return pd.read_sql_query(text(sql), conn, params={"b": str(barcode)})
+
+    def get_product_by_barcode(self, barcode: str) -> pd.DataFrame:
+        """Поиск товара по Штрихкоду товара"""
+        sql = """ SELECT * 
+                    FROM product_barcodes 
+                    WHERE "Штрихкод производителя" = :b 
+                    LIMIT 1 """
         with self.engine.connect() as conn:
             return pd.read_sql_query(text(sql), conn, params={"b": str(barcode)})
 
@@ -587,7 +612,7 @@ class DBManager:
 
             return True, total
         except Exception as e:
-            logging.error(f"Ошибка восстановления БД: {e}")
+            logger.error(f"Ошибка восстановления БД: {e}")
             return False, str(e)
 
     def patch_marketplace_column(self):
@@ -612,10 +637,10 @@ class DBManager:
                 """
                 conn.execute(text(sql_wb))
 
-            logging.info("База данных успешно пропатчена: Маркетплейсы распределены.")
+            logger.info("База данных успешно пропатчена: Маркетплейсы распределены.")
             return True
         except Exception as e:
-            logging.error(f"Ошибка при патче базы данных: {e}")
+            logger.error(f"Ошибка при патче базы данных: {e}")
             return False
 
     def sync_gtins_from_history(self):
@@ -665,7 +690,7 @@ class DBManager:
                 yield (i + 1) / total
 
         except Exception as e:
-            logging.error(f"Ошибка синхронизации GTIN: {e}")
+            logger.error(f"Ошибка синхронизации GTIN: {e}")
             yield 1.0
 
     def cleanup_empty_product_records(self):
@@ -681,7 +706,7 @@ class DBManager:
                 result = conn.execute(query)
                 return result.rowcount
         except Exception as e:
-            logging.error(f"Ошибка очистки пустых строк: {e}")
+            logger.error(f"Ошибка очистки пустых строк: {e}")
             return 0
 
     def deduplicate_product_barcodes_new(self):
@@ -690,7 +715,7 @@ class DBManager:
             # 1. Сначала чистим 'призраков' (пустые строки)
             removed_empty = self.cleanup_empty_product_records()
             if removed_empty > 0:
-                logging.info(f"Очистка БД: Удалено {removed_empty} пустых строк-призраков.")
+                logger.info(f"Очистка БД: Удалено {removed_empty} пустых строк-призраков.")
 
             # 2. Теперь запускаем  стандартную логику дедупликации
             with self.engine.begin() as conn:
@@ -708,7 +733,7 @@ class DBManager:
 
             return True, total_removed
         except Exception as e:
-            logging.error(f"Ошибка дедупликации: {e}")
+            logger.error(f"Ошибка дедупликации: {e}")
             return False, str(e)
 
     def deduplicate_product_barcodes(self):
@@ -717,7 +742,7 @@ class DBManager:
             # 1. Сначала чистим 'призраков' (пустые строки)
             removed_empty = self.cleanup_empty_product_records()
             if removed_empty > 0:
-                logging.info(f"Очистка БД: Удалено {removed_empty} пустых строк-призраков.")
+                logger.info(f"Очистка БД: Удалено {removed_empty} пустых строк-призраков.")
 
             # 2. Теперь запускаем  стандартную логику дедупликации
             with self.engine.connect() as conn:
@@ -733,5 +758,352 @@ class DBManager:
                 conn.commit()
             return True, len(df) - len(df_clean)  # Возвращаем кол-во удаленных дублей
         except Exception as e:
-            logging.error(f"Ошибка дедупликации: {e}")
+            logger.error(f"Ошибка дедупликации: {e}")
             return False, str(e)
+
+    def import_kiz_directory(self, df, progress_callback=None):
+        """
+        Импортирует данные КИЗ в таблицу marking_codes.
+        Ожидает колонки: 'Код маркировки', 'Номер отправления', 'Маркетплейс', 'Статус', 'sku', 'Цена'
+        """
+        try:
+            # Приводим названия колонок к единому стандарту, если нужно
+            # (необязательно, если в Excel они называются так же, как в БД)
+
+            total_rows = len(df)
+            if total_rows == 0:
+                return True, 0
+
+            with self.engine.begin() as conn:
+                for index, row in df.iterrows():
+                    # Логика: если КИЗ существует - обновляем данные, если нет - создаем
+                    # Используем INSERT OR REPLACE для SQLite
+                    stmt = text('''
+                        INSERT OR REPLACE INTO marking_codes 
+                        ("Код маркировки", "Номер отправления", "Маркетплейс", "Статус", "sku", "Цена")
+                        VALUES (:kiz, :order_num, :mp, :status, :sku, :price)
+                    ''')
+
+                    conn.execute(stmt, {
+                        "kiz": str(row.get('Код маркировки', '')).strip(),
+                        "order_num": str(row.get('Номер отправления', '')).strip(),
+                        "mp": str(row.get('Маркетплейс', '')).strip(),
+                        "status": str(row.get('Статус', 'Новый')).strip(),
+                        "sku": str(row.get('sku', '')).strip(),
+                        "price": row.get('Цена', 0)
+                    })
+
+                    if progress_callback and index % 10 == 0:
+                        progress_callback(index / total_rows)
+
+            return True, total_rows
+        except Exception as e:
+            logger.error(f"DB: Ошибка импорта КИЗ: {e}")
+            return False, str(e)
+
+    def sync_ozon_returns_old(self,returns_list):
+        """
+        Обновление статусов в marking_codes на основе данных API.
+        """
+        if not returns_list:
+            return 0
+
+        updated_count = 0
+
+        # Группируем данные из API: {номер_заказа: {sku: количество}}
+        # Это нужно, чтобы корректно обработать частичные возвраты
+        processed_returns = {}
+        for item in returns_list:
+            order_id = item.get('posting_number')
+            sku = str(item.get('sku'))
+            status_ozon = item.get('status_name')  # например, 'returned_to_seller'
+
+            if order_id not in processed_returns:
+                processed_returns[order_id] = {}
+
+            if sku not in processed_returns[order_id]:
+                processed_returns[order_id][sku] = {
+                    'qty': 0,
+                    'status': status_ozon
+                }
+            processed_returns[order_id][sku]['qty'] += 1
+
+        with self.engine.connect() as conn:
+            for order_id, skus in processed_returns.items():
+                for sku, info in skus.items():
+                    # Находим КИЗы по этому заказу и SKU, которые сейчас "Выкуплены"
+                    find_query = text("""
+                        SELECT id FROM marking_codes 
+                        WHERE order_id = :order_id 
+                        AND sku = :sku 
+                        AND status = 'Выкуплен'
+                        ORDER BY id ASC
+                    """)
+
+                    rows = conn.execute(find_query, {"order_id": order_id, "sku": sku}).fetchall()
+
+                    # Обновляем ровно столько штук, сколько пришло в отчете о возвратах
+                    to_update = rows[:info['qty']]
+
+                    for row in to_update:
+                        # Маппинг статуса
+                        new_status = f"Возврат: {info['status']}"
+
+                        update_query = text("""
+                            UPDATE marking_codes 
+                            SET status = :new_status,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = :id
+                        """)
+                        conn.execute(update_query, {"new_status": new_status, "id": row[0]})
+                        updated_count += 1
+
+            conn.commit()
+
+        logger.info(f"Синхронизация завершена. Обновлено статусов: {updated_count}")
+        return updated_count
+
+    def sync_ozon_returns_old2(self, returns_list):
+        """
+        Обновление статусов в marking_codes на основе данных API.
+        """
+        if not returns_list:
+            return 0
+
+        updated_count = 0
+
+        # Группируем данные из API: {номер_заказа: {sku: количество}}
+        processed_returns = {}
+        for item in returns_list:
+            # Используем ключи, которые приходят из нашего нового метода get_returns_list_v1
+            order_id = item.get('posting_number')
+            sku = str(item.get('sku'))
+            status_ozon = item.get('status_name') or "Принят"
+
+            if not order_id or sku == "None":
+                continue
+
+            if order_id not in processed_returns:
+                processed_returns[order_id] = {}
+
+            if sku not in processed_returns[order_id]:
+                processed_returns[order_id][sku] = {
+                    'qty': 0,
+                    'status': status_ozon
+                }
+            processed_returns[order_id][sku]['qty'] += 1
+
+        with self.engine.connect() as conn:
+            for order_id, skus in processed_returns.items():
+                for sku, info in skus.items():
+                    # Поиск по актуальным именам колонок: "Номер отправления", "sku", "Статус"
+                    # Ищем и 'Отгружен' (статус по умолчанию), и 'Выкуплен'
+                    find_query = text("""
+                        SELECT "Код маркировки" FROM marking_codes 
+                        WHERE "Номер отправления" = :order_id 
+                        AND "sku" = :sku 
+                        AND "Статус" IN ('Отгружен', 'Выкуплен')
+                        ORDER BY "Время добавления" ASC
+                    """)
+
+                    rows = conn.execute(find_query, {"order_id": order_id, "sku": sku}).fetchall()
+
+                    # Обновляем ровно столько штук, сколько пришло в отчете о возвратах
+                    to_update = rows[:info['qty']]
+
+                    for row in to_update:
+                        new_status = f"Возврат: {info['status']}"
+
+                        # Обновление по колонкам: "Статус", "Дата обновления", "Код маркировки"
+                        update_query = text("""
+                            UPDATE marking_codes 
+                            SET "Статус" = :new_status,
+                                "Дата обновления" = CURRENT_TIMESTAMP
+                            WHERE "Код маркировки" = :code
+                        """)
+                        conn.execute(update_query, {"new_status": new_status, "code": row[0]})
+                        updated_count += 1
+
+            conn.commit()
+
+        logger.info(f"Синхронизация завершена. Обновлено статусов: {updated_count}")
+        return updated_count
+
+    def sync_ozon_returns_old(self, returns_list):
+        """
+        Обновление статусов в marking_codes на основе данных API v1.
+        """
+        if not returns_list:
+            return 0
+
+        updated_count = 0
+
+        # 1. Группируем возвраты из API
+        processed_returns = {}
+        for item in returns_list:
+            posting_number = item.get('posting_number')
+            sku = str(item.get('sku'))
+            status_ozon = item.get('status_name') or "Принят"
+
+            if not posting_number or sku == "None":
+                continue
+
+            if posting_number not in processed_returns:
+                processed_returns[posting_number] = {}
+
+            if sku not in processed_returns[posting_number]:
+                processed_returns[posting_number][sku] = {'qty': 0, 'status': status_ozon}
+
+            processed_returns[posting_number][sku]['qty'] += 1
+
+        # 2. Работа с базой
+        with self.engine.connect() as conn:
+            for posting_number, skus in processed_returns.items():
+                for sku, info in skus.items():
+                    # УБИРАЕМ строгий фильтр по статусу 'Выкуплен'.
+                    # Ищем любую запись с этим posting_number и sku, которая еще НЕ является возвратом.
+                    find_query = text("""
+                        SELECT "Код маркировки", "Статус" FROM marking_codes 
+                        WHERE "Номер отправления" = :posting_number 
+                        AND "sku" = :sku 
+                        AND "Статус" NOT LIKE 'Возврат%'
+                        ORDER BY "Время добавления" ASC
+                    """)
+
+                    rows = conn.execute(find_query, {"posting_number": posting_number, "sku": sku}).fetchall()
+
+                    if not rows:
+                        # Если не нашли, попробуем поискать по "Артикулу поставщика",
+                        # так как иногда SKU в базе и offer_id в Ozon могут не совпадать
+                        find_alt_query = text("""
+                            SELECT "Код маркировки" FROM marking_codes 
+                            WHERE "Номер отправления" = :posting_number 
+                            AND "Артикул поставщика" = :sku
+                            AND "Статус" NOT LIKE 'Возврат%'
+                        """)
+                        rows = conn.execute(find_alt_query, {"posting_number": posting_number, "sku": sku}).fetchall()
+
+                    # Обновляем ровно столько штук, сколько пришло возвратов в API
+                    to_update = rows[:info['qty']]
+
+                    if not to_update:
+                        logger.warning(f"DB: Не найден КИЗ для заказа {posting_number} (SKU: {sku})")
+                        continue
+
+                    for row in to_update:
+                        new_status = f"Возврат: {info['status']}"
+
+                        update_query = text("""
+                            UPDATE marking_codes 
+                            SET "Статус" = :new_status,
+                                "Дата обновления" = datetime('now', 'localtime')
+                            WHERE "Код маркировки" = :code
+                        """)
+                        conn.execute(update_query, {
+                            "new_status": new_status,
+                            "code": row[0]
+                        })
+                        updated_count += 1
+
+            conn.commit()
+
+        logger.info(f"Синхронизация завершена. Из {len(returns_list)} возвратов обновлено в БД: {updated_count}")
+        return updated_count
+
+    def sync_ozon_returns(self, returns_list):
+        """
+        Обновление статусов в marking_codes на основе данных API v1.
+        Учитывает частичные возвраты (qty) и пишет дату возврата из API.
+        """
+        if not returns_list:
+            return 0
+
+        updated_count = 0
+
+        # 1. Группируем данные. Учитываем 'quantity' для частичных/множественных возвратов
+        processed_returns = {}
+        for item in returns_list:
+            order_id = item.get('posting_number')
+            sku = str(item.get('sku'))
+            status_ozon = item.get('status_name') or "Принят"
+
+            # Если Ozon прислал quantity > 1, конвертируем
+            qty = int(item.get('quantity', 1))
+
+            # Парсинг даты (Ozon присылает '2024-07-29T06:15:48.998146Z')
+            # Переводим в понятный SQLite вид: '2024-07-29 06:15:48'
+            return_date_str = item.get('return_date')
+            if return_date_str:
+                return_date_clean = return_date_str.replace('T', ' ')[:19]
+            else:
+                return_date_clean = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+            if not order_id or sku == "None":
+                continue
+
+            if order_id not in processed_returns:
+                processed_returns[order_id] = {}
+
+            if sku not in processed_returns[order_id]:
+                processed_returns[order_id][sku] = {
+                    'qty': 0,
+                    'status': status_ozon,
+                    'return_date': return_date_clean
+                }
+
+            # Суммируем количество
+            processed_returns[order_id][sku]['qty'] += qty
+
+        # 2. Обновление БД
+        with self.engine.connect() as conn:
+            for order_id, skus in processed_returns.items():
+                for sku, info in skus.items():
+                    # Ищем все КИЗы заказа с этим SKU, которые еще НЕ в статусе возврата
+                    find_query = text("""
+                        SELECT "Код маркировки" FROM marking_codes 
+                        WHERE "Номер отправления" = :order_id 
+                        AND "sku" = :sku 
+                        AND "Статус" NOT LIKE 'Возврат%'
+                        ORDER BY "Время добавления" ASC
+                    """)
+
+                    rows = conn.execute(find_query, {"order_id": order_id, "sku": sku}).fetchall()
+
+                    if not rows:
+                        # Запасной поиск по Артикулу поставщика
+                        find_alt_query = text("""
+                            SELECT "Код маркировки" FROM marking_codes 
+                            WHERE "Номер отправления" = :order_id 
+                            AND "Артикул поставщика" = :sku
+                            AND "Статус" NOT LIKE 'Возврат%'
+                        """)
+                        rows = conn.execute(find_alt_query, {"order_id": order_id, "sku": sku}).fetchall()
+
+                    # Ограничиваем список КИЗов количеством возвращенных штук
+                    to_update = rows[:info['qty']]
+
+                    if not to_update:
+                        logger.warning(f"DB: Не найден КИЗ для заказа {order_id} (SKU: {sku}, ищем {info['qty']} шт.)")
+                        continue
+
+                    for row in to_update:
+                        new_status = f"Возврат: {info['status']}"
+
+                        # Пишем дату из API в "Дата обновления"
+                        update_query = text("""
+                            UPDATE marking_codes 
+                            SET "Статус" = :new_status,
+                                "Дата обновления" = :return_date
+                            WHERE "Код маркировки" = :code
+                        """)
+                        conn.execute(update_query, {
+                            "new_status": new_status,
+                            "return_date": info['return_date'],
+                            "code": row[0]
+                        })
+                        updated_count += 1
+
+            conn.commit()
+
+        logger.info(f"Синхронизация завершена. Из {len(returns_list)} записей API обновлено КИЗов: {updated_count}")
+        return updated_count

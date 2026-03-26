@@ -17,43 +17,12 @@ import logging
 import ast
 from db_manager import DBManager
 from gui.fbs_union_gui import UnionMark
+
+# Создаем логгер для конкретного модуля
+logger = logging.getLogger(__name__)
 # from test_generate import generate_honest_sign_code as ghsc
 
-# -----------------------------------------------------------
-# НАСТРОЙКА ЛОГИРОВАНИЯ
-# -----------------------------------------------------------
-log_file_name = "app.log"
-# 1. Получаем корневой логгер
-root_logger = logging.getLogger()
 
-# 2. Удаляем ВСЕ существующие обработчики (решает проблему дублей)
-if root_logger.hasHandlers():
-    root_logger.handlers.clear()
-
-# 3. Настраиваем конфигурацию с нуля
-# Используем параметр 'handlers' для одновременной настройки файла и консоли
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
-    handlers=[
-        logging.FileHandler(log_file_name, encoding='utf-8'), # Запись в файл
-        logging.StreamHandler()                               # Вывод в консоль
-    ]
-)
-
-# 1. Скрываем шумные логи от библиотек обработки изображений
-logging.getLogger('PIL').setLevel(logging.WARNING)
-logging.getLogger('Image').setLevel(logging.WARNING)
-logging.getLogger('fitz').setLevel(logging.WARNING)
-
-# 2. Скрываем шумные логи от HTTP-запросов (Wildberries API)
-logging.getLogger('urllib3').setLevel(logging.WARNING)
-logging.getLogger('requests').setLevel(logging.WARNING)
-
-# Добавляем логгер, который также выводит сообщения в консоль (если нужно видеть их и там)
-logging.getLogger().addHandler(logging.StreamHandler())
-
-# -----------------------------------------------------------
 # Переменная для хранения имени файла с новыми ШК
 NEW_BARCODES_FILE = "new_barcodes.csv"
 
@@ -146,9 +115,6 @@ class FBSModeOzon(ctk.CTkFrame, UnionMark):
 
         # --- Настройки поставки OZON ---
         self.wb_supply_id_var = getattr(self.app_context, "ozon_fbs_order_id", "")
-        # self.wb_supply_id_var = ctk.StringVar(value=str(saved_supply_id))
-        # self.wb_supply_id_var.trace_add("write", self.update_supply_id)
-        # self.df_barcode_WB = self.app_context.df_barcode_WB
 
         # --- UI элементы ---
         self.scan_entry = None
@@ -464,7 +430,7 @@ class FBSModeOzon(ctk.CTkFrame, UnionMark):
                         # --- ПРОВЕРКА ПОЛЯ ---
                         # Проверяем, существует ли ключ и не является ли значение None
                         if "accruals_for_sale" not in op or op.get("accruals_for_sale") is None:
-                            logging.debug(f"В операции для {posting_no} отсутствует начисление (accruals_for_sale).")
+                            logger.debug(f"В операции для {posting_no} отсутствует начисление (accruals_for_sale).")
                             continue
 
                         accrual = op.get("accruals_for_sale", 0)
@@ -487,7 +453,7 @@ class FBSModeOzon(ctk.CTkFrame, UnionMark):
                                         continue
 
             except Exception as e:
-                logging.error(f"Ошибка при обработке {posting_no}: {e}")
+                logger.error(f"Ошибка при обработке {posting_no}: {e}")
 
         self.update_table()
         self.save_data_to_context()
@@ -611,7 +577,7 @@ class FBSModeOzon(ctk.CTkFrame, UnionMark):
     #     return check_digit == digits[12]
 
     def checkbox_event(self):
-        logging.info("Checkbox toggled, current value:", self.check_var.get())
+        logger.info("Checkbox toggled, current value:", self.check_var.get())
 
     def on_arrow_key_release(self, event):
         """
@@ -731,7 +697,7 @@ class FBSModeOzon(ctk.CTkFrame, UnionMark):
             if not matches.empty:
                 # --- Логика Сборки по сканированию (автоматическая) ---
                 row_index = matches.index[0]
-                # logging.info('row_index',row_index)
+                # logger.info('row_index',row_index)
                 row = self.fbs_df.loc[row_index]
                 self.selected_row_index = row_index
                 # --- ДОБАВЛЕНИЕ ЛОГИКИ ВЫДЕЛЕНИЯ И ФОКУСА - --
@@ -824,7 +790,7 @@ class FBSModeOzon(ctk.CTkFrame, UnionMark):
             if not matches.empty:
                 # --- Логика Сборки по сканированию (автоматическая) ---
                 row_index = matches.index[0]
-                # logging.info('row_index',row_index)
+                # logger.info('row_index',row_index)
                 row = self.fbs_df.loc[row_index]
                 self.selected_row_index = row_index
                 # --- ДОБАВЛЕНИЕ ЛОГИКИ ВЫДЕЛЕНИЯ И ФОКУСА - --
@@ -978,7 +944,7 @@ class FBSModeOzon(ctk.CTkFrame, UnionMark):
             if not matches.empty:
                 # --- Логика Сборки по сканированию (автоматическая) ---
                 row_index = matches.index[0]
-                # logging.info('row_index',row_index)
+                # logger.info('row_index',row_index)
                 row = self.fbs_df.loc[row_index]
                 self.selected_row_index = row_index
                 # --- ДОБАВЛЕНИЕ ЛОГИКИ ВЫДЕЛЕНИЯ И ФОКУСА - --
@@ -1031,7 +997,7 @@ class FBSModeOzon(ctk.CTkFrame, UnionMark):
                     self.show_log(
                         f"❌ Успешно в API OZON  привязан код маркировки {marking_code} к отправлению {posting_number} ")
                 except Exception as e:
-                    logging.info(
+                    logger.info(
                         f"❌ Ошибка API OZON  привязки кода маркировки {marking_code} к отправлению {posting_number}: {str(e)}")
                     self.show_log(
                         f"❌ Ошибка API OZON  привязки кода маркировки {marking_code} к отправлению {posting_number}: {str(e)}",
@@ -1290,18 +1256,6 @@ class FBSModeOzon(ctk.CTkFrame, UnionMark):
         except Exception as e:
             self.show_log(f"Ошибка при сохранении в БД: {e}")
 
-        # # 3. ОБРАБОТКА УСЛОВИЙ В ПАМЯТИ (app_context.df)
-        # # Мы не используем цикл. Concat + drop_duplicates делает то же самое:
-        # # Если строка совпадает по ключам, оставляем последнюю версию (т.е. обновленную)
-        # if self.app_context.df is not None:
-        #     self.app_context.df = pd.concat([self.app_context.df, df_new]).drop_duplicates(
-        #         subset=["Артикул производителя", "Размер"],
-        #         keep='last'  # Важно: оставляем новую версию данных
-        #     ).reset_index(drop=True)
-        # else:
-        #     self.app_context.df = df_new
-        #
-        # self.show_log(f"✅ В базу данных записано строк: {len(df_new)}")
 
     # --- МЕТОДЫ УПРАВЛЕНИЯ UI И ДАННЫМИ ---
     def load_active_orders(self):
@@ -1636,7 +1590,7 @@ class FBSModeOzon(ctk.CTkFrame, UnionMark):
 
             if not new_orders_df_clean.empty:
                 # =================================================================
-                # ШАГ 2: Из self.app_context.df по sku Ozon подтягиваем детали товара --- меняем блок на подтягивание из БД !!!
+                # ШАГ 2: по sku Ozon подтягиваем детали товара  из БД !!!
                 # =================================================================
 
                 # 1. Берем список SKU из новых заказов
@@ -1717,7 +1671,7 @@ class FBSModeOzon(ctk.CTkFrame, UnionMark):
             # self.assign_product.configure(state="disabled")
             return
             # row_index = self.selected_row_index
-        # logging.info(f"DEBUG:FBSModeWB _handle_row_select received index: {row_index}")
+        # logger.info(f"DEBUG:FBSModeWB _handle_row_select received index: {row_index}")
         else:
             self.selected_row_index = row_index
         try:
@@ -1923,9 +1877,9 @@ class FBSModeOzon(ctk.CTkFrame, UnionMark):
 
         row = self.fbs_df.loc[self.selected_row_index]
         posting_number = row["Номер отправления"]
-        # logging.info('Номер заказа:', row["Номер заказа"], 'Индекс строки:', self.selected_row_index)
-        # logging.info('Статус заказа:',row['Статус заказа'],'Номер поставки:',row['Номер поставки'])
-        # logging.info('Проверка шаблона ID поставки:', bool(re.match(self.pattern,row['Номер поставки'])))
+        # logger.info('Номер заказа:', row["Номер заказа"], 'Индекс строки:', self.selected_row_index)
+        # logger.info('Статус заказа:',row['Статус заказа'],'Номер поставки:',row['Номер поставки'])
+        # logger.info('Проверка шаблона ID поставки:', bool(re.match(self.pattern,row['Номер поставки'])))
 
         if row['Статус заказа'] == self.define_status[5]:  # 'awaiting_deliver':
             # if (self.check_related_shipments() and row['Статус обработки'] == self.assembly_status[0]) or flag:
@@ -2103,7 +2057,7 @@ class FBSModeOzon(ctk.CTkFrame, UnionMark):
                     if resp and "result" in resp:
                         status_response.append(resp["result"])
                 except Exception as e:
-                    logging.warning(f"Ошибка запроса API для {check_order}: {e}")
+                    logger.warning(f"Ошибка запроса API для {check_order}: {e}")
 
             # 3. Обработка и обновление DataFrame
             for item in status_response:
@@ -2157,7 +2111,7 @@ class FBSModeOzon(ctk.CTkFrame, UnionMark):
                             if mask_product.any():
                                 self.fbs_df.loc[mask_product, "Цена"] = clean_price
                                 if debug_info:
-                                    logging.info(f"Обновлена цена для {str_posting} / SKU {sku_api}: {clean_price}")
+                                    logger.info(f"Обновлена цена для {str_posting} / SKU {sku_api}: {clean_price}")
 
                 except Exception as e:
                     self.show_log(f"❌ Ошибка обработки данных для {posting_number}: {e}", is_error=True)
@@ -2263,9 +2217,9 @@ class FBSModeOzon(ctk.CTkFrame, UnionMark):
             color = "red" if is_error else "green"
             self.log_label.configure(text=message, text_color=color)
             if is_error:
-                logging.error(message)
+                logger.error(message)
             else:
-                logging.info(message)
+                logger.info(message)
 
         if hasattr(self, 'log_timer_id') and self.log_timer_id:
             self.after_cancel(self.log_timer_id)
@@ -2345,19 +2299,5 @@ class FBSModeOzon(ctk.CTkFrame, UnionMark):
         # Если есть только штрихкод - желтый
         if row["Штрихкод"] != "":
             return "found"  # Желтый цвет для найденных штрих кодов
-
-        # # Проверяем наличие в основной базе данных
-        # if self.app_context.df is not None:
-        #     matches = self.app_context.df[
-        #         (self.app_context.df["Артикул производителя"].astype(str) == str(row["Артикул поставщика"])) &
-        #         (self.app_context.df["Размер"].astype(str) == str(row["Размер"]))
-        #         ]
-        #     if not matches.empty:
-        #         return "found"
-        #
-        # # Проверяем в локальной базе
-        # key = f"{row['Артикул поставщика']}_{row['Размер']}"
-        # if key in self.ozon_marking_db:
-        #     return "found"
 
         return "missing"

@@ -12,39 +12,27 @@ import sys
 import socket
 import base64
 from typing import Optional, Dict
+# Создаем логгер для конкретного модуля
+logger = logging.getLogger(__name__)
 
 try:
     import fitz # PyMuPDF
 except ImportError:
     msg="❌ WARNING: PyMuPDF (fitz) не установлен. Печать Ozon (PDF) будет невозможна. Установите командой 'pip install PyMuPDF'"
-    logging.info(msg)
-    print(msg)
+    logger.info(msg)
     fitz = None
 
 if sys.platform == 'linux':
     IS_WINDOWS = False
 else:
     IS_WINDOWS = True
-# print('sys.platform:',sys.platform)
-# print('IS_WINDOWS:',IS_WINDOWS)
 
 import win32print
 import win32ui
 
-# === Настройка логирования ===
-logging.basicConfig(
-    filename="debug_log.txt",
-    level=logging.DEBUG,
-    format="%(asctime)s %(message)s",
-    datefmt="[%Y-%m-%d %H:%M:%S]"
-)
-# Получаем логгер для этого модуля
-logger = logging.getLogger(__name__)
 
 def log(msg):
     logger.info(msg)
-    # print(f"[DEBUG] {msg}")
-
 
 class LabelPrinter:
     def __init__(self, printer_name='по умолчанию'): #'XPriner 365B'
@@ -92,7 +80,7 @@ class LabelPrinter:
                 decoded = base64.b64decode(pdf_bytes)
                 if decoded.startswith(b'%PDF'):
                     pdf_bytes = decoded
-                    # print("✅ Успешно распознаны и декодированы байты Base64")
+
             except Exception:
                 # Если не вышло, оставляем как есть, упадет на следующей проверке
                 pass
@@ -104,10 +92,9 @@ class LabelPrinter:
         if not pdf_bytes.startswith(b'%PDF'):
             # Если данные есть, но это не PDF, логируем первые 20 байт для отладки
             raise ValueError(f"Данные не являются PDF файлом (Signature mismatch). Начало: {pdf_bytes[:20]}")
-        # print(f"[DEBUG] Конвертация PDF: тип={type(pdf_bytes)}, размер={len(pdf_bytes)} байт")
 
         try:
-            logging.info('1. Загрузка PDF из байтов')
+            logger.info('1. Загрузка PDF из байтов')
             # 1. Загрузка PDF из байтов
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
             page = doc[0]
@@ -124,7 +111,7 @@ class LabelPrinter:
                 # Применяем масштабирование
                 matrix = fitz.Matrix(scale_factor, scale_factor)
 
-                print(
+                logger.info(
                     f"Текущая ширина PDF: {current_width_mm:.2f} мм. Целевая: {target_width_mm} мм. Масштаб: {scale_factor:.2f}")
             else:
                 # Если масштабирование не задано (target_width_mm = None),
@@ -132,16 +119,16 @@ class LabelPrinter:
                 # 72 - исходное разрешение PDF в МуPDF, 300 - целевое DPI
                 scale_factor = self.DPI_DEFAULT / 72
                 matrix = fitz.Matrix(scale_factor, scale_factor)
-                print(f"Масштабирование не требуется (target_width_mm = None). Использование DPI: {self.DPI_DEFAULT}.")
+                logger.info(f"Масштабирование не требуется (target_width_mm = None). Использование DPI: {self.DPI_DEFAULT}.")
 
-            logging.info('2. Рендеринг страницы в Pixmap')
+            logger.info('2. Рендеринг страницы в Pixmap')
             # 2. Рендеринг страницы в Pixmap
             pix = page.get_pixmap(matrix=matrix, alpha=False)
 
-            logging.info('3. Конвертация в PIL.Image')
+            logger.info('3. Конвертация в PIL.Image')
             # 3. Конвертация в PIL.Image
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            print(f"3. Конвертация в PIL.Image. Размер после рендеринга: {img.size}")
+            logger.info(f"3. Конвертация в PIL.Image. Размер после рендеринга: {img.size}")
             doc.close()
             # --- ФИНАЛЬНАЯ ОБРАБОТКА: ПОВОРОТ И РЕСАЙЗ/ОБРЕЗКА ---
 
@@ -149,7 +136,7 @@ class LabelPrinter:
             # expand=True гарантирует, что изображение расширится для размещения повернутого содержимого
             # PIL.Image.rotate(-90) выполняет поворот по часовой стрелке
             image = img.rotate(90, expand=True)
-            print(f"4. Поворот на -90 градусов (по часовой). Размер после поворота: {image.size}")
+            logger.info(f"4. Поворот на -90 градусов (по часовой). Размер после поворота: {image.size}")
 
             # 5. Финальное приведение к размеру 58x40 мм (при {self.DPI_DEFAULT} DPI)
             target_size_px = (self.FINAL_LABEL_W_PX, self.FINAL_LABEL_H_PX)
@@ -167,7 +154,7 @@ class LabelPrinter:
             y_offset = (final_image.height - image.height) // 2
             final_image.paste(image, (x_offset, y_offset))
 
-            print(
+            logger.info(
                 f"5. Финальный размер: {final_image.size} ({self.FINAL_LABEL_W_MM}x{self.FINAL_LABEL_H_MM} мм при {self.DPI_DEFAULT} DPI)")
 
             return final_image
@@ -175,7 +162,7 @@ class LabelPrinter:
             return img
 
         except Exception as e:
-            # logging.error(f"Ошибка конвертации PDF в Image: {e}")
+            # logger.error(f"Ошибка конвертации PDF в Image: {e}")
             raise RuntimeError(f"Ошибка конвертации PDF в Image: {e}")
 
 
@@ -191,7 +178,7 @@ class LabelPrinter:
             printer_name: Имя принтера, как оно указано в "Устройства и принтеры" Windows.
         """
         if not os.path.exists(png_path):
-            print(f"❌ Ошибка: Файл не найден по пути: {png_path}")
+            logger.info(f"❌ Ошибка: Файл не найден по пути: {png_path}")
             return
 
         # Инициализируем переменные для очистки
@@ -253,13 +240,13 @@ class LabelPrinter:
             printer_dc.EndPage()
             printer_dc.EndDoc()
 
-            print(f"✅ Файл '{png_path}' успешно отправлен на печать на принтер '{self.printer_name}' через GDI.")
+            logger.info(f"✅ Файл '{png_path}' успешно отправлен на печать на принтер '{self.printer_name}' через GDI.")
 
         except win32print.error as pe:
-            print(f"❌ Ошибка принтера: Проверьте, что принтер '{self.printer_name}' установлен и доступен.")
-            print(f"Подробности: {pe}")
+            logger.error(f"❌ Ошибка принтера: Проверьте, что принтер '{self.printer_name}' установлен и доступен.")
+            logger.error(f"Подробности: {pe}")
         except Exception as e:
-            print(f"❌ Непредвиденная ошибка: {e}")
+            logger.error(f"❌ Непредвиденная ошибка: {e}")
         finally:
             # 6. ОЧИСТКА РЕСУРСОВ GDI
             # Удаляем DC. GDI-объекты должны быть удалены в обратном порядке создания.
@@ -277,8 +264,6 @@ class LabelPrinter:
                 del bmp
 
     # --- ПРИМЕР ИСПОЛЬЗОВАНИЯ ---
-    # print_png_gdi_from_file("C:\\path\\to\\your\\label.png", "Zebra ZD420")
-    # print("Для запуска примера замените путь к файлу и имя принтера на ваши реальные и раскомментируйте вызов функции.")
 
     def print_zpl_network(self, zpl_code, host: str, port: int = 9100) -> bool:
         """
@@ -372,7 +357,7 @@ class LabelPrinter:
                 # Для ^POI, Print Width - это фактическая ДЛИНА в портретном режиме.
                 label_length = int(pw_match.group(1))
 
-        print(f"📌 Определенная длина этикетки (LABEL_LENGTH): {label_length} точек")
+        logger.info(f"📌 Определенная длина этикетки (LABEL_LENGTH): {label_length} точек")
 
         # --- ЭТАП 2: ПЕРЕОРИЕНТАЦИЯ КООРДИНАТ И КОМАНД ---
         new_zpl_lines = []
@@ -427,20 +412,18 @@ class LabelPrinter:
             #     f.write(decoded_data)
             # И заменить его на:
             decoded_data.save(filename, format='PNG')  # <-- Правильный способ
-            logging.info(f"✅ DEBUG: Сохранен файл этикетки для анализа: {filename}")
-            print(f"✅ DEBUG: Сохранен файл этикетки для анализа: {filename}")
+            logger.info(f"✅ DEBUG: Сохранен файл этикетки для анализа: {filename}")
+
         except Exception as e:
-            logging.error(f"❌ Ошибка при сохранении файла отладки: {e}")
-            print(f"❌ Ошибка при сохранении файла отладки: {e}")
+            logger.error(f"❌ Ошибка при сохранении файла отладки: {e}")
+
             return False
         log("🔎 Формат: PNG. Выполняю печать.")
         try:
             self.print_on_windows_light(filename)
-            logging.info(f"✅ Этикетка успешно напечатана")
-            print(f"✅ Этикетка успешно напечатана")
+            logger.info(f"✅ Этикетка успешно напечатана")
         except Exception as e:
-            logging.error(f"❌ Ошибка печати фала:{filename} на принтере {self.printer_name}:{e}")
-            print(f"❌ Ошибка печати фала:{filename} на принтере {self.printer_name}:{e}")
+            logger.error(f"❌ Ошибка печати фала:{filename} на принтере {self.printer_name}:{e}")
             return False
         return True
 
@@ -453,10 +436,10 @@ class LabelPrinter:
         import base64
         debug_info = True
         try:
-            if debug_info: print('Пытаемся декодировать, предполагая base64')
+            if debug_info: logger.info('Пытаемся декодировать, предполагая base64')
             decoded_data = base64.b64decode(label_data_base64)
         except Exception:
-            if debug_info: print('Декодировать не удалось, предполагаем, что это чистый ZPL текст')
+            if debug_info: logger.error('Декодировать не удалось, предполагаем, что это чистый ZPL текст')
             decoded_data = label_data_base64.encode('utf-8', errors='ignore')
 
         # --- ЛОГИКА ВРЕМЕННОЙ ОТЛАДКИ: СОХРАНЕНИЕ ФАЙЛА ---
@@ -474,8 +457,7 @@ class LabelPrinter:
             try:
                 decoded_data2 = self.reorient_zpl_to_portrait_auto(decoded_data)
             except Exception as e:
-                logging.error(f"❌ Ошибка при конвертации ротации файла zpl: {e}")
-                print(f"❌ Ошибка при конвертации ротации файла zpl: {e}")
+                logger.error(f"❌ Ошибка при конвертации ротации файла zpl: {e}")
             # -----------------------------------------------
             filename2 = os.path.join(temp_dir,
                              f"wb_label_{order_id}_{datetime.now().strftime('%H%M%S')}_v2.{file_extension}")
@@ -483,23 +465,18 @@ class LabelPrinter:
                 try:
                     with open(filename2, "wb") as f2:
                         f2.write(decoded_data2)
-                    logging.info(f"✅ DEBUG: Сохранен файл этикетки для анализа: {filename2}")
-                    print(f"✅ DEBUG: Сохранен файл этикетки для анализа: {filename2}")
+                    logger.info(f"✅ DEBUG: Сохранен файл этикетки для анализа: {filename2}")
                 except Exception as e:
-                    logging.error(f"❌ Ошибка при сохранении файла отладки:{filename2} {e}")
-                    print(f"❌ Ошибка при сохранении файла отладки:{filename2} {e}")
+                    logger.error(f"❌ Ошибка при сохранении файла отладки:{filename2} {e}")
 
 
         filename = os.path.join(temp_dir,f"wb_label_{order_id}_{datetime.now().strftime('%H%M%S')}.{file_extension}")
         try:
             with open(filename, "wb") as f:
                 f.write(decoded_data)
-            logging.info(f"✅ DEBUG: Сохранен файл этикетки для анализа: {filename}")
-            print(f"✅ DEBUG: Сохранен файл этикетки для анализа: {filename}")
+            logger.info(f"✅ DEBUG: Сохранен файл этикетки для анализа: {filename}")
         except Exception as e:
-            logging.error(f"❌ Ошибка при сохранении файла отладки: {e}")
-            print(f"❌ Ошибка при сохранении файла отладки: {e}")
-
+            logger.error(f"❌ Ошибка при сохранении файла отладки: {e}")
 
          # --- КОНЕЦ ЛОГИКИ ВРЕМЕННОЙ ОТЛАДКИ ---
         log(f"Начало универсальной печати на принтер: {self.printer_name}")
@@ -523,9 +500,7 @@ class LabelPrinter:
                 self.print_on_windows_light(filename)
                 return True
             except Exception as e:
-                    logging.error(f"❌ Ошибка печати фала:{filename} на принтере {self.printer_name}:{e}")
-                    print(f"❌ Ошибка печати фала:{filename} на принтере {self.printer_name}:{e}")
-
+                    logger.error(f"❌ Ошибка печати фала:{filename} на принтере {self.printer_name}:{e}")
 
         else:
             log("❌ Неопознанный формат данных этикетки (ни ZPL, ни PNG). Обратитесь к разработчику для поддержки печати других форматов")
@@ -752,9 +727,9 @@ class LabelPrinter:
         except OSError:
             font = ImageFont.load_default()
 
-        # --- Проверка формата ---
-        if not self.is_correct_gs1_format(raw_string):
-            raise ValueError("Неверный формат входной строки")
+        # --- Проверка формата --- уберем проверку совсем, так как идет проверка перед вызовом
+        # if not self.is_correct_gs1_format(raw_string):
+        #     raise ValueError("Неверный формат входной строки")
 
         # --- Генерация DataMatrix ---
         matrixGenerator = GS1DataMatrixGenerator()
@@ -780,7 +755,7 @@ class LabelPrinter:
             logo_y = padding
             etiketka.paste(logo, (logo_x, logo_y), logo.split()[3])
         else:
-            print(f"[!] Логотип не найден: {logo_path}")
+            logger.info(f"[!] Логотип не найден: {logo_path}")
 
         # --- Описание товара справа от кода ---
         desc_x = dm_x + dm_image.width + 20
@@ -794,7 +769,7 @@ class LabelPrinter:
 
         # --- Сохраняем результат ---
         # etiketka.save(output_path)
-        print(f"✅ Этикетка сохранена как '{output_path}'")
+        logger.info(f"✅ Этикетка сохранена как '{output_path}'")
         return etiketka
 
         # ----------------------------------------------
@@ -958,7 +933,7 @@ class LabelPrinter:
 
         try:
             printer_name = self.printer_name if self.printer_name != 'по умолчанию' else win32print.GetDefaultPrinter()
-            print(f"🖨️ Печать на принтере: {printer_name}")
+            logger.info(f"🖨️ Печать на принтере: {printer_name}")
 
             hprinter = win32print.OpenPrinter(printer_name)
             try:
@@ -983,7 +958,7 @@ class LabelPrinter:
                 win32print.ClosePrinter(hprinter)
 
         except Exception as e:
-            print(f"❌ Ошибка печати, на принтере {printer_name}:", str(e))
+            logger.error(f"❌ Ошибка печати, на принтере {printer_name}:", str(e))
 
         # ----------------------------------------------
     def print_on_windows(self, image_path=None, image=None): # Оригинальное исполнение, которое ранее работало
@@ -1000,7 +975,7 @@ class LabelPrinter:
 
         try:
             printer_name = self.printer_name if self.printer_name != 'по умолчанию' else win32print.GetDefaultPrinter()
-            print(f"🖨️ Печать на принтере: {printer_name}")
+            logger.info(f"🖨️ Печать на принтере: {printer_name}")
 
             hprinter = win32print.OpenPrinter(printer_name)
             try:
@@ -1028,7 +1003,7 @@ class LabelPrinter:
                 os.remove(temp_path)
 
         except Exception as e:
-            print("❌ Ошибка печати:", str(e))
+            logger.error("❌ Ошибка печати:", str(e))
 
     # --- API для работы с этикетками ---
     def print_ozon_label(self, barcode_value, product_info):

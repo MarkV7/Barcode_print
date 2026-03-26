@@ -8,6 +8,13 @@ import os
 import shutil
 import logging # Добавлено
 from sqlalchemy import text # ОБЯЗАТЕЛЬНО для работы с БД
+import time
+from ozon_fbs_api import OzonFBSAPI
+from wildberries_fbs_api import WildberriesFBSAPI
+
+import requests
+# Создаем логгер для конкретного модуля
+logger = logging.getLogger(__name__)
 
 class ReportsMode(ctk.CTkFrame):
     def __init__(self, parent, font, db_manager, app_context):
@@ -15,7 +22,8 @@ class ReportsMode(ctk.CTkFrame):
         self.db = db_manager
         self.font = font
         self.app_context = app_context
-
+        if not os.path.exists("Data"):
+            os.makedirs("Data")
         # Внутри __init__ ReportsMode временно, через некоторое время удалить
         # self.db.patch_marketplace_column()
 
@@ -29,11 +37,20 @@ class ReportsMode(ctk.CTkFrame):
 
         # Настройка сетки (3 колонки для блоков)
         self.main_container.columnconfigure((0, 1, 2, 3), weight=1, uniform="group1", pad=20)
+        # Даем второй строке (где Блок 5 и низ Блока 4) вес, чтобы они тянулись до низа
+        self.main_container.rowconfigure(0, weight=0)
+        self.main_container.rowconfigure(1, weight=0)
+
+        if self.app_context.ozon_client_id and self.app_context.ozon_api_key:
+            self.ozon_api = OzonFBSAPI(self.app_context.ozon_client_id, self.app_context.ozon_api_key)
+        if self.app_context.wb_api_token:
+            self.wb_api = WildberriesFBSAPI(self.app_context.wb_api_token)
 
         self._init_export_block()
         self._init_import_block()
         self._init_maintenance_block()
         self._init_analytics_block()
+        self._init_ozon_finance_block()
 
     def _init_export_block(self):
         """Блок №1: Экспорт данных"""
@@ -44,7 +61,7 @@ class ReportsMode(ctk.CTkFrame):
 
         # --- ПОДБЛОК: МАРКИРОВКА (С ДАТАМИ) ---
         marking_group = ctk.CTkFrame(block, fg_color="transparent")
-        marking_group.pack(fill="x", padx=10)
+        marking_group.pack(fill="x", padx=20)
 
         # Секция выбора дат
         date_frame = ctk.CTkFrame(marking_group, fg_color="transparent")
@@ -67,18 +84,17 @@ class ReportsMode(ctk.CTkFrame):
         date_frame.columnconfigure((0, 1), weight=1)
 
         self.btn_export_marking = ctk.CTkButton(
-            marking_group, text="Экспорт Кодов маркировки",
+            marking_group, text="Экспорт Справочника КИЗ",
             command=self.export_marking_logic, height=40, fg_color="#27ae60", hover_color="#219150"
         )
-        self.btn_export_marking.pack(pady=(15, 10), fill="x")
-
+        self.btn_export_marking.pack(pady=(15, 0), fill="x")
         # --- РАЗДЕЛИТЕЛЬНАЯ ПОЛОСА ---
-        separator = ctk.CTkFrame(block, height=2, fg_color=("gray70", "gray30"))
+        separator = ctk.CTkFrame(block, height=2, fg_color="gray30")
         separator.pack(fill="x", padx=20, pady=20)
 
         # --- ПОДБЛОК: ОБЩИЕ ШТРИХКОДЫ ---
         self.btn_export_barcodes = ctk.CTkButton(
-            block, text="Экспорт всех Штрихкодов",
+            block, text="Экспорт Справочника ШК",
             command=self.export_barcodes_logic, height=40
         )
         self.btn_export_barcodes.pack(pady=(0, 20), padx=20, fill="x")
@@ -89,11 +105,12 @@ class ReportsMode(ctk.CTkFrame):
         block.grid(row=0, column=1, sticky="nsew", padx=10)
 
         ctk.CTkLabel(block, text="ИМПОРТ", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=10)
+        ctk.CTkLabel(block, text="Справочник ШК", font=ctk.CTkFont(size=13, weight="bold")).pack()
 
         # ДОБАВЛЯЕМ self. к кнопке
         self.btn_import = ctk.CTkButton(
             block,
-            text="Импортировать справочник",
+            text="Импорт Справочник ШК",
             command=self.import_barcodes_logic,
             height=40  # <--- Добавьте этот параметр
         )
@@ -103,7 +120,58 @@ class ReportsMode(ctk.CTkFrame):
         self.progress_bar = ctk.CTkProgressBar(block)
         self.progress_bar.set(0)
         self.progress_bar.pack(pady=10, padx=20, fill="x")
+        # --- РАЗДЕЛИТЕЛЬ ---
+        ctk.CTkFrame(block, height=2, fg_color="gray30").pack(fill="x", padx=30, pady=10)
 
+        # --- НОВОЕ: ИМПОРТ КИЗ ---
+        ctk.CTkLabel(block, text="Справочник КИЗ", font=ctk.CTkFont(size=13, weight="bold")).pack()
+
+        self.btn_import_kiz = ctk.CTkButton(
+            block, text="Импорт Справочник КИЗ",
+            command=self.import_kiz_logic, height=40,
+            fg_color="#3498db", hover_color="#2980b9"
+        )
+        self.btn_import_kiz.pack(pady=10, padx=20, fill="x")
+
+        self.kiz_import_progress = ctk.CTkProgressBar(block)
+        self.kiz_import_progress.set(0)
+        self.kiz_import_progress.pack(pady=10, padx=20, fill="x")
+
+    def import_kiz_logic(self):
+        """Логика импорта КИЗ из Excel"""
+        path = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx *.xls")])
+        if not path:
+            return
+
+        self.btn_import_kiz.configure(state="disabled", text="Загрузка КИЗ...")
+        self.kiz_import_progress.set(0)
+
+        def worker():
+            try:
+                df = pd.read_excel(path)
+
+                def update_progress(val):
+                    self.after(0, lambda: self.kiz_import_progress.set(val))
+
+                # Вызываем метод в db_manager
+                success, count = self.db.import_kiz_directory(df, progress_callback=update_progress)
+
+                self.after(0, lambda: self.finish_kiz_import(success, count))
+            except Exception as e:
+                logger.error(f"Ошибка в потоке импорта КИЗ: {e}")
+                self.after(0, lambda: self.finish_kiz_import(False, str(e)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def finish_kiz_import(self, success, result):
+        """Завершение импорта КИЗ"""
+        self.btn_import_kiz.configure(state="normal", text="Импортировать КИЗ (Excel)")
+        if success:
+            self.kiz_import_progress.set(1.0)
+            messagebox.showinfo("Успех", f"Справочник КИЗ обновлен.\nЗаписей обработано: {result}")
+        else:
+            self.kiz_import_progress.set(0)
+            messagebox.showerror("Ошибка импорта", f"Детали: {result}")
     def _validate_date(self, entry_widget):
         """Визуальная подсказка правильности ввода даты"""
         date_str = entry_widget.get()
@@ -141,7 +209,7 @@ class ReportsMode(ctk.CTkFrame):
 
     def export_barcodes_logic(self):
         df = self.db.get_all_product_barcodes()
-        filename = f"Справочник штрикодов маркировки_{datetime.now().strftime('%d.%m.%Y')}.xlsx"
+        filename = f"Справочник штрихкодов_{datetime.now().strftime('%d.%m.%Y')}.xlsx"
         path = filedialog.asksaveasfilename(defaultextension=".xlsx", initialfile=filename)
         if path:
             df.to_excel(path, index=False)
@@ -171,7 +239,7 @@ class ReportsMode(ctk.CTkFrame):
                 # Возвращаемся в главный поток для завершения
                 self.after(0, lambda: self.finish_import(success, count))
             except Exception as e:
-                # logging.error(f"Ошибка в потоке импорта: {e}")
+                # logger.error(f"Ошибка в потоке импорта: {e}")
                 self.after(0, lambda: self.finish_import(False, str(e)))
 
         # Запускаем в отдельном потоке, чтобы GUI не зависал
@@ -355,18 +423,28 @@ class ReportsMode(ctk.CTkFrame):
     def _init_analytics_block(self):
         """Блок №4: Аналитика и Честный Знак с прогрессбаром"""
         block = ctk.CTkFrame(self.main_container)
-        block.grid(row=0, column=3, sticky="nsew", padx=10)
+        block.grid(row=0, column=3, rowspan=2, sticky="nsew", padx=10, pady=10)
 
         ctk.CTkLabel(block, text="АНАЛИТИКА КИЗ", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=10)
 
+        # Обычная кнопка (уже есть)
         self.sync_btn = ctk.CTkButton(
             block,
-            text="🔄 Обновить статусы\n(API WB/Ozon)",
+            text="🔄 Обновить статусы\n(быстрая)",
             height=40,
-            command=self.start_sync_statuses,
+            command=lambda:self.start_sync_statuses(deep=False),
             fg_color="#2c3e50"
         )
         self.sync_btn.pack(fill="x", padx=20, pady=10)
+        # Новая кнопка глубокого обновления
+        self.deep_sync_btn = ctk.CTkButton(
+            block,
+            text="Глубокое обновление\n(все статусы)",
+            fg_color="#d35400",  # Оранжевый цвет для привлечения внимания
+            hover_color="#e67e22",
+            command=lambda:self.start_sync_statuses(deep=True)
+        )
+        self.deep_sync_btn.pack(fill="x", padx=20, pady=10)
 
         # Прогрессбар для синхронизации
         self.sync_progress = ctk.CTkProgressBar(block)
@@ -402,6 +480,149 @@ class ReportsMode(ctk.CTkFrame):
         self.sync_label = ctk.CTkLabel(block, text="Статус: готов к работе", font=ctk.CTkFont(size=12))
         self.sync_label.pack(pady=10)
 
+        # Кнопка: Синхронизация Ozon
+        self.btn_sync_ozon = ctk.CTkButton(
+            block,
+            text="Синхронизировать возвраты Ozon",
+            height=40,
+            command=self.on_sync_ozon_returns,
+            fg_color="#1f77b4"  # Выделим цветом Ozon
+        )
+        self.btn_sync_ozon.pack(fill="x", padx=20, pady=10)
+
+        # ПРАВКА 2: Добавлен прогрессбар
+        self.ozon_sync_progress = ctk.CTkProgressBar(block)
+        self.ozon_sync_progress.pack(fill="x", padx=20, pady=(0, 10))
+        self.ozon_sync_progress.set(0)
+
+        # Кнопка: Экспорт для MarkZnak
+        self.btn_export_returns = ctk.CTkButton(
+            block,
+            text="Экспорт возвратов (MarkZnak)",
+            height=40,
+            command=self.on_export_returns_to_excel,
+            fg_color="#2ca02c"  # Зеленая для экспорта
+        )
+        self.btn_export_returns.pack(fill="x", padx=20, pady=10)
+
+    # --- ПРАВКА 3: Логика с прогрессбаром и потоком ---
+    def on_sync_ozon_returns(self):
+        """Событие нажатия на кнопку синхронизации возвратов Ozon"""
+        self.btn_sync_ozon.configure(state="disabled", text="Синхронизация...")
+        self.ozon_sync_progress.set(0.1)
+        self.sync_label.configure(text="⏳ Запрос к Ozon API...")
+
+        def worker():
+            try:
+                # 1. Запрос к API
+                # returns_data = self.ozon_api.get_fbs_returns()
+                # Стало (вызываем новый метод с параметрами):
+                returns_data = self.ozon_api.get_returns_list_v1()
+
+                self.after(0, lambda: self.ozon_sync_progress.set(0.5))
+                self.after(0, lambda: self.sync_label.configure(text="⏳ Обновление базы данных..."))
+
+                if not returns_data:
+                    self.after(0, lambda: messagebox.showinfo("Результат", "Новых возвратов не найдено."))
+                    self._reset_ozon_sync_ui()
+                    return
+
+                # 2. Обновление БД
+                # Если в db_manager.sync_ozon_returns добавлена поддержка callback, передаем её
+                # Если нет — просто выполняем
+                count = self.db.sync_ozon_returns(returns_data)
+
+                self.after(0, lambda: self.ozon_sync_progress.set(1.0))
+                self.after(0, lambda: messagebox.showinfo("Успех", f"Статусы обновлены!\nОбновлено КИЗ: {count}"))
+
+            except Exception as e:
+                logger.error(f"Ошибка синхронизации: {e}")
+                self.after(0, lambda: messagebox.showerror("Ошибка", f"Не удалось обновить данные"))
+            finally:
+                self.after(0, self._reset_ozon_sync_ui)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _reset_ozon_sync_ui(self):
+        """Сброс элементов управления после завершения"""
+        self.btn_sync_ozon.configure(state="normal", text="Синхронизировать возвраты Ozon")
+        self.ozon_sync_progress.set(0)
+        self.sync_label.configure(text="Статус: готов к работе")
+
+    def on_export_returns_to_excel(self):
+        """
+        Экспорт КИЗ со статусом возврата для MarkZnak.
+        Полный аналог export_for_znak с измененным фильтром и префиксом файла.
+        """
+
+        def run_export():
+            try:
+                # 1. Индикация начала (блокировка кнопки и прогрессбар)
+                self.after(0, lambda: self.btn_export_returns.configure(state="disabled"))
+                self.after(0, lambda: self.export_progress.set(0.1))
+                self.after(0, lambda: self.sync_label.configure(text="⏳ Подготовка данных возвратов..."))
+
+                # 2. Запрос к БД (Поля как в export_for_znak, меняем только WHERE)
+                query = text("""
+                    SELECT 
+                        "Код маркировки" AS "КИ (код идентификации)",
+                        "Цена" AS "Цена",
+                        "Номер отправления" AS "Номер чека"
+                    FROM marking_codes 
+                    WHERE "Статус" LIKE 'Возврат%'
+                """)
+                with self.db.engine.connect() as conn:
+                    df = pd.read_sql(query, conn)
+
+                if df.empty:
+                    self.after(0, lambda: messagebox.showinfo("Экспорт",
+                                                              "Нет товаров со статусом 'Возврат' для экспорта."))
+                    return
+
+                self.after(0, lambda: self.export_progress.set(0.4))
+
+                # 3. Диалог выбора пути (с измененным префиксом Markznak_Export_Returns_)
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                default_filename = f"Markznak_Export_Returns_{timestamp}.xlsx"
+
+                file_path = filedialog.asksaveasfilename(
+                    defaultextension=".xlsx",
+                    filetypes=[("Excel files", "*.xlsx")],
+                    initialfile=default_filename,
+                    title="Сохранить экспорт возвратов"
+                )
+
+                if not file_path:
+                    return
+
+                self.after(0, lambda: self.sync_label.configure(text="💾 Сохранение файла..."))
+
+                # 4. Формирование Excel (полная копия логики формирования из export_for_znak)
+                with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+                    df.to_excel(writer, index=False, sheet_name='Returns')
+
+                    # Автоподбор ширины колонок
+                    worksheet = writer.sheets['Returns']
+                    for i, col in enumerate(df.columns):
+                        column_len = max(df[col].astype(str).map(len).max(), len(col)) + 2
+                        worksheet.column_dimensions[chr(65 + i)].width = column_len
+
+                self.after(0, lambda: self.export_progress.set(1.0))
+                self.after(0, lambda: messagebox.showinfo("Успех", f"Файл возвратов сформирован!\nЗаписей: {len(df)}"))
+
+            except Exception as e:
+                logger.error(f"ОШИБКА ЭКСПОРТА ВОЗВРАТОВ: {e}", exc_info=True)
+                err_msg = str(e)
+                self.after(0, lambda m=err_msg: messagebox.showerror("Ошибка", f"Не удалось создать файл:\n{m}"))
+            finally:
+                # Возврат UI в исходное состояние
+                self.after(0, lambda: self.btn_export_returns.configure(state="normal"))
+                self.after(0, lambda: self.export_progress.set(0))
+                self.after(0, lambda: self.sync_label.configure(text="Статус: готов к работе"))
+
+        # Запуск в отдельном потоке
+        threading.Thread(target=run_export, daemon=True).start()
+
     def start_gtin_sync(self):
         self.gtin_sync_btn.configure(state="disabled")
         threading.Thread(target=self.run_gtin_sync, daemon=True).start()
@@ -419,31 +640,40 @@ class ReportsMode(ctk.CTkFrame):
             self.gtin_sync_btn.configure(state="normal")
             self.gtin_progress.set(0)
 
-    def start_sync_statuses(self):
+    def start_sync_statuses(self, deep=False):
         self.sync_btn.configure(state="disabled")
+        self.deep_sync_btn.configure(state="disabled")
         self.sync_progress.set(0)
         self.sync_label.configure(text="⏳ Подключение к API...")
-        threading.Thread(target=self._proc_sync_logic, daemon=True).start()
+        threading.Thread(target=self._proc_sync_logic, args=(deep,),daemon=True).start()
 
-    def _proc_sync_logic_olded(self):
+    def _proc_sync_logic_full(self, deep=False):
+        '''
+        Запускает синхронизацию по статусам и пытается найти Цену выкупа для Озон
+        '''
         try:
-            # 1. Инициализируем API (берем данные из контекста, как в fbs_ozon_gui)
+            mode_text = "ГЛУБОКОЕ" if deep else "БЫСТРОЕ"
+            logger.info(f"--- Запуск синхронизации ({mode_text}) ---")
+
             from ozon_fbs_api import OzonFBSAPI
             from wildberries_fbs_api import WildberriesFBSAPI
+            import time
 
-            ozon_api = None
-            wb_api = None
+            ozon_api = self.ozon_api
+            wb_api = self.wb_api
 
-            if self.app_context.ozon_client_id and self.app_context.ozon_api_key:
-                ozon_api = OzonFBSAPI(self.app_context.ozon_client_id, self.app_context.ozon_api_key)
+            # if self.app_context.ozon_client_id and self.app_context.ozon_api_key:
+            #     ozon_api = OzonFBSAPI(self.app_context.ozon_client_id, self.app_context.ozon_api_key)
+            # if self.app_context.wb_api_token:
+            #     wb_api = WildberriesFBSAPI(self.app_context.wb_api_token)
 
-            if self.app_context.wb_api_token:
-                wb_api = WildberriesFBSAPI(self.app_context.wb_api_token)
+            # Выборка данных
+            where_clause = 'WHERE "Номер отправления" IS NOT NULL AND "Номер отправления" != ""' if deep else \
+                'WHERE "Статус" NOT IN ("Выкуплен", "Возврат") AND "Номер отправления" IS NOT NULL'
 
-            # 2. Получаем данные из БД
             with self.db.engine.connect() as conn:
                 query = text(
-                    'SELECT "Номер отправления", "Код маркировки", "Маркетплейс", "Статус" FROM marking_codes WHERE "Статус" NOT IN ("Выкуплен", "Возврат")')
+                    f'SELECT "Номер отправления", "Код маркировки", "Маркетплейс", "Статус", "sku", "Цена" FROM marking_codes {where_clause}')
                 df_to_update = pd.read_sql(query, conn)
 
             if df_to_update.empty:
@@ -454,169 +684,195 @@ class ReportsMode(ctk.CTkFrame):
             updated_count = 0
             processed_count = 0
 
-            # 3. Цикл по маркетплейсам
             for mp, group in df_to_update.groupby("Маркетплейс"):
                 mp_name = str(mp).strip()
-                order_ids = [str(x).strip() for x in group["Номер отправления"].unique().tolist() if x]
 
-                # --- ЛОГИКА OZON ---
+                # --- БЛОК OZON ---
                 if mp_name == 'Ozon' and ozon_api:
-                    for p_num in order_ids:
-                        try:
-                            # Используем метод, который точно есть в ozon_fbs_api.py
-                            info = ozon_api.get_posting_info(p_num)
-                            # В Ozon API статус лежит в result -> status
-                            ozon_status = info.get('result', {}).get('status')
-                            new_status = self._map_ozon_status(ozon_status)
+                    order_ids = [str(x).strip() for x in group["Номер отправления"].unique().tolist() if
+                                 x and str(x).lower() != 'nan']
 
-                            if new_status:
-                                mask = group["Номер отправления"].astype(str) == p_num
-                                for _, row in group[mask].iterrows():
-                                    if row['Статус'] != new_status:
-                                        self.db.update_kiz_status(row['Код маркировки'], new_status)
-                                        updated_count += 1
-                        except Exception as e:
-                            logging.error(f"Ошибка Ozon {p_num}: {e}")
-
-                        processed_count += 1
-                        self._update_sync_ui(f"Проверка Ozon... {processed_count}/{total_items}",
-                                             processed_count / total_items)
-
-                # --- ЛОГИКА WB ---
-                elif mp_name == 'WB' and wb_api:
-                    # У WB есть метод get_orders_statuses, который принимает список ID
-                    for i in range(0, len(order_ids), 100):
-                        chunk = order_ids[i:i + 100]
-                        try:
-                            # В wildberries_fbs_api.py этот метод возвращает список статусов
-                            statuses = wb_api.get_orders_statuses(chunk)
-                            for s in statuses:
-                                wb_id = str(s.get('orderId'))
-                                wb_status = s.get('status')
-                                new_status = self._map_wb_status(wb_status)
-
-                                if new_status:
-                                    mask = group["Номер отправления"].astype(str) == wb_id
-                                    for _, row in group[mask].iterrows():
-                                        if row['Статус'] != new_status:
-                                            self.db.update_kiz_status(row['Код маркировки'], new_status)
-                                            updated_count += 1
-                        except Exception as e:
-                            logging.error(f"Ошибка WB: {e}")
-
-                        processed_count += len(chunk)
-                        self._update_sync_ui(f"Проверка WB... {processed_count}/{total_items}",
-                                             processed_count / total_items)
-
-            self._update_sync_ui(f"✅ Обновлено: {updated_count}", 1.0)
-            messagebox.showinfo("Готово", f"Синхронизация завершена.\nОбновлено статусов: {updated_count}")
-
-        except Exception as e:
-            logging.error(f"Ошибка синхронизации: {e}", exc_info=True)
-            self._update_sync_ui("❌ Ошибка", 0)
-        finally:
-            self.after(0, lambda: self.sync_btn.configure(state="normal"))
-
-    def _proc_sync_logic(self):
-        try:
-            logging.info("--- Запуск синхронизации статусов ---")
-
-            # 1. Инициализация API
-            from ozon_fbs_api import OzonFBSAPI
-            from wildberries_fbs_api import WildberriesFBSAPI
-
-            ozon_api = None
-            wb_api = None
-
-            if self.app_context.ozon_client_id and self.app_context.ozon_api_key:
-                ozon_api = OzonFBSAPI(self.app_context.ozon_client_id, self.app_context.ozon_api_key)
-                logging.info("API Ozon инициализировано")
-
-            if self.app_context.wb_api_token:
-                wb_api = WildberriesFBSAPI(self.app_context.wb_api_token)
-                logging.info("API WB инициализировано")
-
-            # 2. Получение данных
-            with self.db.engine.connect() as conn:
-                query = text(
-                    'SELECT "Номер отправления", "Код маркировки", "Маркетплейс", "Статус" FROM marking_codes WHERE "Статус" NOT IN ("Выкуплен", "Возврат")')
-                df_to_update = pd.read_sql(query, conn)
-
-            logging.info(f"Найдено {len(df_to_update)} поз. для проверки в API")
-
-            if df_to_update.empty:
-                self._update_sync_ui("✅ Все актуально", 1.0)
-                logging.info("Синхронизация не требуется: все статусы финальные")
-                return
-
-            total_items = len(df_to_update)
-            updated_count = 0
-            processed_count = 0
-
-            # 3. Обработка по маркетплейсам
-            for mp, group in df_to_update.groupby("Маркетплейс"):
-                mp_name = str(mp).strip()
-                order_ids = [str(x).strip() for x in group["Номер отправления"].unique().tolist() if x]
-
-                logging.info(f"Обработка маркетплейса {mp_name}: {len(order_ids)} заказов")
-
-                # OZON
-                if mp_name == 'Ozon' and ozon_api:
                     for p_num in order_ids:
                         try:
                             info = ozon_api.get_posting_info(p_num)
                             res = info.get('result', {})
-                            ozon_status = res.get('status') if isinstance(res, dict) else info.get('status')
+                            if not res:
+                                # Если Ozon не ответил по заказу, считаем строки обработанными, чтобы прогресс шел
+                                processed_count += len(group[group["Номер отправления"] == p_num])
+                                continue
 
-                            new_status = self._map_ozon_status(ozon_status)
-                            logging.info(f"Ozon заказ {p_num}: статус API '{ozon_status}' -> '{new_status}'")
+                            actual_price = None
+                            target_sku = str(group[group["Номер отправления"] == p_num]["sku"].iloc[0])
 
-                            if new_status:
-                                mask = group["Номер отправления"].astype(str) == p_num
-                                for _, row in group[mask].iterrows():
-                                    if row['Статус'] != new_status:
-                                        self.db.update_kiz_status(row['Код маркировки'], new_status)
-                                        updated_count += 1
+                            # Поиск цены в фин. данных
+                            fin_data = res.get('financial_data')
+                            if fin_data:
+                                for p in fin_data.get('products', []):
+                                    if str(p.get('sku')) == target_sku:
+                                        actual_price = p.get('price')
+                                        break
+
+                            # Поиск в транзакциях, если нет в заказе
+                            if not actual_price:
+                                try:
+                                    trans_resp = ozon_api.get_order_transaction_info(p_num)
+                                    for op in trans_resp.get('result', {}).get('operations', []):
+                                        if op.get('operation_type') in ['OperationRetailSell',
+                                                                        'OperationRetailSellRefund']:
+                                            for it in op.get('items', []):
+                                                if str(it.get('sku')) == target_sku:
+                                                    actual_price = it.get('price')
+                                                    break
+                                        if actual_price: break
+                                except:
+                                    pass
+
+                            new_status = self._map_ozon_status(res.get('status'))
+                            mask = group["Номер отправления"] == p_num
+
+                            for _, row in group[mask].iterrows():
+                                # ИСПРАВЛЕНИЕ ЦЕНЫ: Округляем до 2 знаков перед записью
+                                final_price = round(float(actual_price), 2) if actual_price else row['Цена']
+                                if final_price:
+                                    final_price = round(float(final_price), 2)
+
+                                self.db.update_kiz_status_and_price(row['Код маркировки'], new_status, final_price)
+                                updated_count += 1
+                                processed_count += 1  # Считаем каждую строку
+
                         except Exception as e:
-                            logging.error(f"Ошибка запроса Ozon {p_num}: {e}")
+                            logger.error(f"Ошибка Ozon {p_num}: {e}")
+                            processed_count += len(group[group["Номер отправления"] == p_num])
 
-                        processed_count += 1
                         self._update_sync_ui(f"Ozon: {processed_count}/{total_items}", processed_count / total_items)
+                        time.sleep(0.1)
 
-                # WB
-                elif mp_name == 'WB' and wb_api:
-                    for i in range(0, len(order_ids), 100):
-                        chunk = order_ids[i:i + 100]
+                # --- БЛОК WILDBERRIES ---
+                elif mp_name in ['WB', 'Wildberries'] and wb_api:
+                    raw_ids = group["Номер отправления"].unique().tolist()
+                    clean_ids = []
+                    for rid in raw_ids:
+                        try:
+                            val = str(rid).strip().lower()
+                            if val and val != 'nan': clean_ids.append(int(float(val)))
+                        except:
+                            continue
+
+                    for i in range(0, len(clean_ids), 100):
+                        chunk = clean_ids[i:i + 100]
+                        if not chunk: continue
+
                         try:
                             statuses = wb_api.get_orders_statuses(chunk)
-                            for s in statuses:
-                                wb_id = str(s.get('orderId'))
-                                wb_stat = s.get('status')
-                                new_stat = self._map_wb_status(wb_stat)
+                            if statuses:
+                                for s in statuses:
+                                    wb_id = str(s.get('orderId'))
+                                    new_stat = self._map_wb_status(s.get('status'))
 
-                                logging.info(f"WB заказ {wb_id}: статус API '{wb_stat}' -> '{new_stat}'")
+                                    # Фильтруем строки в группе по этому WB ID
+                                    mask = group["Номер отправления"].astype(str).str.contains(wb_id, na=False)
+                                    sub_group = group[mask]
 
-                                if new_stat:
-                                    mask = group["Номер отправления"].astype(str) == wb_id
-                                    for _, row in group[mask].iterrows():
-                                        if row['Статус'] != new_stat:
-                                            self.db.update_kiz_status(row['Код маркировки'], new_stat)
-                                            updated_count += 1
+                                    for _, row in sub_group.iterrows():
+                                        # Для WB тоже принудительно округляем старую цену, чтобы убрать лишние нули
+                                        old_price = round(float(row['Цена']), 2) if row['Цена'] else 0.0
+                                        self.db.update_kiz_status_and_price(row['Код маркировки'], new_stat, old_price)
+                                        updated_count += 1
+                                        processed_count += 1
                         except Exception as e:
-                            logging.error(f"Ошибка запроса WB chunk: {e}")
+                            logger.error(f"WB error: {e}")
+                            processed_count += len(chunk)  # В случае ошибки сдвигаем прогресс
 
-                        processed_count += len(chunk)
-                        self._update_sync_ui(f"WB: {processed_count}/{total_items}", processed_count / total_items)
+                        self._update_sync_ui(f"WB: {processed_count}/{total_items}",
+                                             min(processed_count / total_items, 0.99))
 
-            logging.info(f"Синхронизация завершена. Обновлено записей: {updated_count}")
+            # ФИНАЛ: Принудительно 100% и красивый статус
             self._update_sync_ui(f"✅ Обновлено: {updated_count}", 1.0)
-            messagebox.showinfo("Готово", f"Обновлено статусов: {updated_count}")
+            logger.info(f"Синхронизация завершена. Обновлено записей: {updated_count}")
+            messagebox.showinfo("Готово", f"Синхронизация завершена.\nОбновлено записей: {updated_count}")
 
         except Exception as e:
-            logging.error(f"Критическая ошибка синхронизации: {e}", exc_info=True)
+            logger.error(f"Критическая ошибка: {e}", exc_info=True)
             self._update_sync_ui("❌ Ошибка", 0)
         finally:
             self.after(0, lambda: self.sync_btn.configure(state="normal"))
+            self.after(0, lambda: self.deep_sync_btn.configure(state="normal"))
+
+    def _proc_sync_logic(self, deep=False):
+        try:
+            mode_text = "ГЛУБОКОЕ" if deep else "БЫСТРОЕ"
+            logger.info(f"--- Запуск синхронизации ({mode_text}) ---")
+
+            from ozon_fbs_api import OzonFBSAPI
+            from wildberries_fbs_api import WildberriesFBSAPI
+
+            ozon_api = None
+            wb_api = None
+
+            if self.app_context.ozon_client_id and self.app_context.ozon_api_key:
+                ozon_api = OzonFBSAPI(self.app_context.ozon_client_id, self.app_context.ozon_api_key)
+            if self.app_context.wb_api_token:
+                wb_api = WildberriesFBSAPI(self.app_context.wb_api_token)
+
+            where_clause = 'WHERE "Номер отправления" IS NOT NULL AND "Номер отправления" != ""' if deep else \
+                           'WHERE "Статус" NOT IN ("Выкуплен", "Возврат") AND "Номер отправления" IS NOT NULL'
+
+            with self.db.engine.connect() as conn:
+                query = text(f'SELECT "Номер отправления", "Код маркировки", "Маркетплейс" FROM marking_codes {where_clause}')
+                df_to_update = pd.read_sql(query, conn)
+
+            if df_to_update.empty:
+                self._update_sync_ui("✅ Все актуально", 1.0)
+                return
+
+            total_items = len(df_to_update)
+            updated_count = 0
+            processed_count = 0
+
+            for mp, group in df_to_update.groupby("Маркетплейс"):
+                mp_name = str(mp).strip()
+
+                # --- OZON (Только статусы) ---
+                if mp_name == 'Ozon' and ozon_api:
+                    order_ids = [str(x).strip() for x in group["Номер отправления"].unique().tolist() if x and str(x).lower() != 'nan']
+                    for p_num in order_ids:
+                        try:
+                            info = ozon_api.get_posting_info(p_num)
+                            res = info.get('result', {})
+                            if res:
+                                new_status = self._map_ozon_status(res.get('status'))
+                                mask = group["Номер отправления"] == p_num
+                                for _, row in group[mask].iterrows():
+                                    self.db.update_kiz_status(row['Код маркировки'], new_status)
+                                    updated_count += 1
+                                    processed_count += 1
+                        except: pass
+                        self._update_sync_ui(f"Ozon: {processed_count}/{total_items}", processed_count/total_items)
+
+                # --- WB (Только статусы) ---
+                elif mp_name in ['WB', 'Wildberries'] and wb_api:
+                    # (Логика очистки ID остается как в прошлом шаге)
+                    raw_ids = [int(float(str(x))) for x in group["Номер отправления"].unique().tolist() if str(x).lower() != 'nan']
+                    for i in range(0, len(raw_ids), 100):
+                        chunk = raw_ids[i:i + 100]
+                        try:
+                            statuses = wb_api.get_orders_statuses(chunk)
+                            if statuses:
+                                for s in statuses:
+                                    wb_id = str(s.get('orderId'))
+                                    new_stat = self._map_wb_status(s.get('status'))
+                                    mask = group["Номер отправления"].astype(str).str.contains(wb_id, na=False)
+                                    for _, row in group[mask].iterrows():
+                                        self.db.update_kiz_status(row['Код маркировки'], new_stat)
+                                        updated_count += 1
+                                        processed_count += 1
+                        except: pass
+                        self._update_sync_ui(f"WB: {processed_count}/{total_items}", processed_count/total_items)
+
+            self._update_sync_ui(f"✅ Готово: {updated_count}", 1.0)
+            messagebox.showinfo("Готово", f"Обновлено статусов: {updated_count}")
+        except Exception as e:
+            logger.error(f"Ошибка синхронизации: {e}")
 
     def _update_sync_ui(self, text_val, progress_val):
         """Безопасное обновление UI из потока"""
@@ -630,7 +886,7 @@ class ReportsMode(ctk.CTkFrame):
         }
         res = mapped.get(wb_status)
         if wb_status and not res:
-            logging.debug(f"Статус WB '{wb_status}' пропущен (не финальный)")
+            logger.debug(f"Статус WB '{wb_status}' пропущен (не финальный)")
         return res
 
     def _map_ozon_status(self, ozon_status):
@@ -640,73 +896,11 @@ class ReportsMode(ctk.CTkFrame):
             return 'Возврат'
 
         if ozon_status:
-            logging.debug(f"Статус Ozon '{ozon_status}' пропущен (не финальный)")
+            logger.debug(f"Статус Ozon '{ozon_status}' пропущен (не финальный)")
         return None
 
-    def export_for_znak_old(self):
-        """
-        Экспорт выкупленных КИЗ для Честного Знака.
-        Выгружает только коды со статусом 'Выкуплен' в формате CSV.
-        """
-        # 1. Сначала спрашиваем пользователя, куда сохранить файл
-        # Это делаем в основном потоке, так как GUI диалоги требуют этого
-        file_path = filedialog.asksaveasfilename(
-            defaultextension=".csv",
-            filetypes=[("CSV", "*.csv")],
-            initialfile=f"export_cz_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-            title="Сохранить коды для Честного Знака"
-        )
-
-        if not file_path:
-            return
-
-        def run_export():
-            try:
-                # Начало процесса
-                self.after(0, lambda: self.export_cz_btn.configure(state="disabled"))
-                self.after(0, lambda: self.export_progress.set(0.1))
-                self.after(0, lambda: self.sync_label.configure(text="⏳ Подготовка данных..."))
-
-                # 2. Получаем данные из БД
-                with self.db.engine.connect() as conn:
-                    # Выбираем только саму колонку с кодом
-                    query = text('SELECT "Код маркировки" FROM marking_codes WHERE "Статус" = "Выкуплен"')
-                    df = pd.read_sql(query, conn)
-
-                self.after(0, lambda: self.export_progress.set(0.5))
-
-                if df.empty:
-                    self.after(0, lambda: messagebox.showinfo("Инфо",
-                                                              "В базе нет КИЗ со статусом 'Выкуплен' для экспорта."))
-                    return
-
-                # 3. Сохранение в файл
-                # Для Честного Знака обычно нужен простой список кодов.
-                # Сохраняем без заголовков и индексов.
-                df.to_csv(file_path, index=False, header=False, encoding='utf-8-sig')
-
-                self.after(0, lambda: self.export_progress.set(1.0))
-                self.after(0, lambda: self.sync_label.configure(text="✅ Экспорт завершен"))
-
-                # Показываем результат
-                count = len(df)
-                self.after(0, lambda: messagebox.showinfo("Успех",
-                                                          f"Экспорт успешно завершен!\n\nКоличество кодов: {count}\nФайл: {os.path.basename(file_path)}"))
-
-            except Exception as e:
-                logging.error(f"Ошибка при экспорте для ЧЗ: {e}", exc_info=True)
-                self.after(0, lambda: messagebox.showerror("Ошибка", f"Не удалось выполнить экспорт:\n{e}"))
-            finally:
-                # Возвращаем UI в исходное состояние
-                self.after(3000, lambda: self.export_progress.set(0))
-                self.after(3000, lambda: self.sync_label.configure(text="Статус: готов к работе"))
-                self.after(0, lambda: self.export_cz_btn.configure(state="normal"))
-
-        # Запускаем в отдельном потоке, чтобы прогрессбар плавно работал
-        threading.Thread(target=run_export, daemon=True).start()
-
-    def export_for_znak(self):
-        """Экспорт выкупленных КИЗ в формате CSV для Markznak"""
+    def export_for_znak_csv(self):
+        """Экспорт выкупленных КИЗ в формате XLSX для Markznak"""
         # Сразу блокируем кнопку, чтобы не нажать дважды
         self.export_cz_btn.configure(state="disabled")
         self.sync_label.configure(text="⏳ Подготовка...")
@@ -714,15 +908,16 @@ class ReportsMode(ctk.CTkFrame):
 
         # 1. Диалог выбора файла (должен быть в основном потоке)
         try:
-            initial_name = f"Markznak_Export_{datetime.now().strftime('%Y-%m-%d')}.csv"
             file_path = filedialog.asksaveasfilename(
-                defaultextension=".csv",
-                filetypes=[("CSV файлы", "*.csv")],
-                initialfile=initial_name,
-                title="Сохранить экспорт для Markznak"
+                defaultextension=".xlsx",
+                filetypes=[("Excel files", "*.xlsx")],
+                initialfile=f"Markznak_Export_{datetime.now().strftime('%d%m%Y')}.xlsx",
+                title = "Сохранить экспорт для Markznak"
             )
+            if not file_path:
+                return
         except Exception as e:
-            logging.error(f"Ошибка вызова диалога: {e}")
+            logger.error(f"Ошибка вызова диалога: {e}")
             self.export_cz_btn.configure(state="normal")
             return
 
@@ -761,8 +956,8 @@ class ReportsMode(ctk.CTkFrame):
                 df["КИ (код идентификации)"] = df["КИ (код идентификации)"].str.replace('\x1d', '_x001d_', regex=False)
 
                 # 3. Сохранение
-                # utf-8-sig — чтобы Excel и Markznak корректно читали кириллицу
-                df.to_csv(file_path, index=False, header=True, encoding='utf-8-sig', sep=',')
+                # Используем движок openpyxl, индекс не нужен
+                df.to_excel(file_path, index=False, engine='openpyxl')
 
                 # 4. Успешное завершение
                 count = len(df)
@@ -772,7 +967,7 @@ class ReportsMode(ctk.CTkFrame):
 
             except Exception as e:
                 # Если что-то пошло не так в потоке — выводим ошибку
-                logging.error(f"КРИТИЧЕСКАЯ ОШИБКА ЭКСПОРТА: {e}", exc_info=True)
+                logger.error(f"КРИТИЧЕСКАЯ ОШИБКА ЭКСПОРТА: {e}", exc_info=True)
                 self.after(0, lambda: messagebox.showerror("Ошибка потока", f"Произошла ошибка при сборке файла:\n{e}"))
 
             finally:
@@ -784,3 +979,278 @@ class ReportsMode(ctk.CTkFrame):
         # Запуск потока
         t = threading.Thread(target=worker, daemon=True)
         t.start()
+
+    def export_for_znak(self):
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx")],
+            initialfile=f"Markznak_Export_{datetime.now().strftime('%d%m%Y')}.xlsx"
+        )
+        if not file_path:
+            return
+
+        self.export_cz_btn.configure(state="disabled")
+        self.export_progress.set(0.1)
+        self.sync_label.configure(text="⏳ Подготовка Excel...")
+
+        def run_export():
+            try:
+                # 1. Запрашиваем реальное имя из БД ("Код маркировки")
+                # Но для файла Markznak нам нужно имя "КИ (код идентификации)"
+                query = text('''SELECT 
+                                        "Код маркировки" AS "КИ (код идентификации)",
+                                        "Цена" AS "Цена",
+                                        "Номер отправления" AS "Номер чека"
+                                    FROM marking_codes
+                                    WHERE "Статус" = 'Выкуплен'
+                                ''')
+                with self.db.engine.connect() as conn:
+                    df = pd.read_sql(query, conn)
+
+                if df.empty:
+                    self.after(0, lambda: messagebox.showwarning("Внимание", "Нет данных для экспорта."))
+                    return
+
+                # --- ЗАЩИТА ОТ ЗАВИСАНИЯ (Обработка данных) ---
+                # Заполняем пустые значения, чтобы .str.replace не вызвал ошибку
+                df["КИ (код идентификации)"] = df["КИ (код идентификации)"].fillna("").astype(str)
+                df["Цена"] = df["Цена"].fillna(0)
+                df["Номер чека"] = df["Номер чека"].fillna("").astype(str)
+
+                # Заменяем спецсимвол GS (разделитель групп) на текстовый код для Markznak
+                df["КИ (код идентификации)"] = df["КИ (код идентификации)"].str.replace('\x1d', '_x001d_',
+                                                                                        regex=False)
+
+                # 4. Сохранение в XLSX
+                df.to_excel(file_path, index=False, engine='openpyxl')
+
+                # Успех
+                count = len(df)
+                self.after(0, lambda: self.export_progress.set(1.0))
+                self.after(0, lambda: self.sync_label.configure(text="✅ Готово"))
+                self.after(0, lambda: messagebox.showinfo("Успех", f"Успешно экспортировано {count} строк в Excel."))
+
+            except Exception as e:
+                error_msg = str(e) # Сохраняем текст ошибки в строку заранее
+                logger.error(f"ОШИБКА ЭКСПОРТА XLSX: {error_msg}", exc_info=True)
+                # Передаем строку ошибки в lambda через аргумент по умолчанию
+                self.after(0, lambda m=error_msg: messagebox.showerror("Ошибка", f"Не удалось создать Excel файл:\n{m}"))
+            finally:
+                # В ЛЮБОМ СЛУЧАЕ возвращаем кнопку в рабочее состояние
+                self.after(500, lambda: self.export_cz_btn.configure(state="normal"))
+                self.after(3000, lambda: self.export_progress.set(0))
+                self.after(3000, lambda: self.sync_label.configure(text="Статус: готов к работе"))
+
+        threading.Thread(target=run_export, daemon=True).start()
+
+    def _init_ozon_finance_block(self):
+        """Блок №5: Финансовый отчет Озон (Исправленный визуал)"""
+        block = ctk.CTkFrame(self.main_container)
+        # Размещаем под Аналитикой.
+        # Добавляем pady=(20, 40), чтобы визуально увеличить отступ снизу и "растянуть" зону
+        block.grid(row=1, column=2, sticky="nsew", padx=10, pady=10)
+
+        ctk.CTkLabel(block, text="ФИНАНСОВЫЙ ОТЧЕТ OZON", font=ctk.CTkFont(size=14, weight="bold")).pack(pady=10)
+
+        # 1. Даты периода в одну строку (как в Экспорте)
+        date_frame = ctk.CTkFrame(block, fg_color="transparent")
+        date_frame.pack(fill="x", padx=20, pady=5)
+
+        # Настройка сетки для дат
+        ctk.CTkLabel(date_frame, text="С даты:", font=ctk.CTkFont(size=12)).grid(row=0, column=0, sticky="w")
+        self.fin_date_from = ctk.CTkEntry(date_frame, placeholder_text="ГГГГ-ММ-ДД")
+        self.fin_date_from.insert(0, datetime.now().strftime("%Y-%m-01"))
+        self.fin_date_from.grid(row=1, column=0, padx=(0, 5), sticky="ew")
+
+        ctk.CTkLabel(date_frame, text="По дату:", font=ctk.CTkFont(size=12)).grid(row=0, column=1, sticky="w")
+        self.fin_date_to = ctk.CTkEntry(date_frame, placeholder_text="ГГГГ-ММ-ДД")
+        self.fin_date_to.insert(0, datetime.now().strftime("%Y-%m-%d"))
+        self.fin_date_to.grid(row=1, column=1, padx=(5, 0), sticky="ew")
+
+        date_frame.columnconfigure((0, 1), weight=1)
+
+        # 2. Кнопки с высотой 40 (как в Аналитике/Экспорте)
+        self.btn_request_fin = ctk.CTkButton(
+            block, text="Запросить фин. отчет",
+            command=self._request_ozon_finance_report,
+            fg_color="#34495e",
+            height=40  # Увеличенная высота
+        )
+        self.btn_request_fin.pack(pady=(20, 10), padx=20, fill="x")
+
+        self.btn_import_fin = ctk.CTkButton(
+            block, text="Импортировать отчет\n (обновление цены)",
+            command=self._import_ozon_finance_report,
+            fg_color="#2980b9",
+            height=40  # Увеличенная высота
+        )
+        self.btn_import_fin.pack(pady=10, padx=20, fill="x")
+
+        # Дополнительный пустой лейбл внизу для "растягивания" серой области вниз
+        ctk.CTkLabel(block, text="", height=10).pack()
+
+    def _request_ozon_finance_report(self):
+        """Реализация Пункта 3: Запрос отчета через методы класса OzonFBSAPI"""
+        date_from = self.fin_date_from.get()
+        date_to = self.fin_date_to.get()
+
+        if not re.match(r"\d{4}-\d{2}-\d{2}", date_from) or not re.match(r"\d{4}-\d{2}-\d{2}", date_to):
+            messagebox.showerror("Ошибка", "Используйте формат ГГГГ-ММ-ДД")
+            return
+
+        self.btn_request_fin.configure(state="disabled", text="⏳ Формирование...")
+
+        def run_request():
+            try:
+                from ozon_fbs_api import OzonFBSAPI
+                # Инициализируем API (сессия и заголовки создаются внутри __init__)
+                api = OzonFBSAPI(self.app_context.ozon_client_id, self.app_context.ozon_api_key)
+
+                # 1. Создаем запрос на отчет
+                res_create = api.create_orders_report(date_from, date_to)
+                report_code = res_create.get('result', {}).get('code')
+
+                if not report_code:
+                    raise ValueError(f"Ozon не вернул код отчета: {res_create}")
+
+                # 2. Ожидание готовности
+                report_url = None
+                attempts = 0
+                max_attempts = 30
+
+                while attempts < max_attempts:
+                    time.sleep(5)
+                    attempts += 1
+
+                    res_info = api.get_report_info(report_code)
+                    status_data = res_info.get('result', {})
+
+                    status = status_data.get('status')
+                    if status == 'success':
+                        report_url = status_data.get('file')
+                        break
+                    elif status == 'failed':
+                        raise ValueError("Ozon отклонил генерацию отчета.")
+
+                    logger.info(f"Ожидание отчета {report_code}: {status}...")
+
+                if not report_url:
+                    raise TimeoutError("Превышено время ожидания отчета.")
+
+                # 3. Скачивание (используем ту же сессию API для скачивания)
+                if not os.path.exists("Data"):
+                    os.makedirs("Data")
+
+                file_name = f"Data/ozon_fin_{date_from}_{date_to}.csv"
+                file_resp = api.session.get(report_url)  # Используем сессию из API класса
+
+                with open(file_name, 'wb') as f:
+                    f.write(file_resp.content)
+
+                self.after(0, lambda: messagebox.showinfo("Успех",
+                                                          f"Отчет готов и сохранен в папку Data:\n{os.path.basename(file_name)}"))
+
+            except Exception as e:
+                error_text = str(e)
+                logger.error(f"ОШИБКА API OZON: {error_text}", exc_info=True)
+                self.after(0,
+                           lambda m=error_text: messagebox.showerror("Ошибка API", f"Не удалось получить отчет:\n{m}"))
+            finally:
+                self.after(0, lambda: self.btn_request_fin.configure(state="normal", text="Запросить фин. отчет"))
+
+        threading.Thread(target=run_request, daemon=True).start()
+
+    def _import_ozon_finance_report(self):
+        """Реализация Пункта 2: Импорт цен из CSV по SKU"""
+        file_path = filedialog.askopenfilename(
+            title="Выберите файл postings.csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+        )
+
+        if not file_path:
+            return
+
+        # Блокируем кнопку и запускаем поток
+        self.btn_import_fin.configure(state="disabled")
+
+        def run_import():
+            try:
+                # 1. Чтение файла (Ozon часто использует UTF-8 или CP1251)
+                try:
+                    df = pd.read_csv(file_path, sep=';', encoding='utf-8')
+                except UnicodeDecodeError:
+                    df = pd.read_csv(file_path, sep=';', encoding='cp1251')
+
+                # Очистка названий колонок от пробелов
+                df.columns = [c.strip() for c in df.columns]
+
+                # Проверка наличия нужных колонок
+                required = ['SKU', 'Оплачено покупателем']
+                if not all(col in df.columns for col in required):
+                    missing = [col for col in required if col not in df.columns]
+                    raise ValueError(f"В файле не найдены колонки: {', '.join(missing)}")
+
+                # 2. Подготовка данных для обновления
+                # Оставляем только уникальные SKU, берем последнюю встреченную цену
+                # (Если один товар купили дважды по разной цене, в справочник попадет последняя)
+                price_map = {}
+                for _, row in df.iterrows():
+                    sku = str(row['SKU']).strip()
+                    try:
+                        # Превращаем цену в число (заменяем запятую на точку, если она есть)
+                        val = str(row['Оплачено покупателем']).replace(',', '.')
+                        price = round(float(val), 2)
+                        price_map[sku] = price
+                    except (ValueError, TypeError):
+                        continue
+
+                if not price_map:
+                    self.after(0, lambda: messagebox.showwarning("Внимание", "Не удалось извлечь данные о ценах."))
+                    return
+
+                # 3. Обновление базы данных
+                updated_sku_count = 0
+                total_kiz_affected = 0
+
+                with self.db.engine.begin() as conn:  # Транзакция
+                    for sku, price in price_map.items():
+                        # Обновляем все записи с этим SKU
+                        result = conn.execute(
+                            text('UPDATE marking_codes SET "Цена" = :price WHERE "sku" = :sku'),
+                            {"price": price, "sku": sku}
+                        )
+                        if result.rowcount > 0:
+                            updated_sku_count += 1
+                            total_kiz_affected += result.rowcount
+
+                # 4. Результат
+                self.after(0, lambda: messagebox.showinfo(
+                    "Успех",
+                    f"Обновление завершено!\n\n"
+                    f"Найдено в файле уникальных SKU: {len(price_map)}\n"
+                    f"Обновлено цен для товаров: {updated_sku_count}\n"
+                    f"Всего изменено записей КИЗ: {total_kiz_affected}"
+                ))
+
+            except Exception as e:
+                logger.error(f"ОШИБКА ИМПОРТА ЦЕН: {e}", exc_info=True)
+                error_text = str(e)
+                self.after(0, lambda m=error_text: messagebox.showerror("Ошибка", f"Ошибка при парсинге файла:\n{m}"))
+            finally:
+                self.after(0, lambda: self.btn_import_fin.configure(state="normal"))
+
+        threading.Thread(target=run_import, daemon=True).start()
+
+    def on_sync_returns_pressed(self):
+        # 1. Получаем данные через API (Шаг 1)
+        returns_data = self.app_context.ozon_api.get_fbs_returns()
+
+        if not returns_data:
+            messagebox.showinfo("Инфо", "Новых возвратов не найдено.")
+            return
+
+        # 2. Отправляем в базу на синхронизацию (Шаг 2)
+        # self.app_context.db_manager - это ваш экземпляр менеджера БД
+        count = self.app_context.db_manager.sync_ozon_returns(returns_data)
+
+        messagebox.showinfo("Успех", f"Статусы обновлены! Товаров в возврате: {count}")

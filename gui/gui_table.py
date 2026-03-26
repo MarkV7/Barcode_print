@@ -3,7 +3,10 @@ from tkinter import ttk
 import pandas as pd
 from tkinter import filedialog, messagebox
 from PIL import Image
+import logging
 
+# Создаем логгер для конкретного модуля
+logger = logging.getLogger(__name__)
 
 class EntryPopup(ttk.Entry):
     def __init__(self, parent, row_id, col_index, text, font=None, **kw):

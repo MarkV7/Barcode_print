@@ -9,9 +9,12 @@ from gui.gui_table import EditableDataTable
 from sound_player import play_success_scan_sound, play_unsuccess_scan_sound
 from printer_handler import LabelPrinter
 from db_manager import DBManager  # <--- ИМПОРТ МЕНЕДЖЕРА БД
+from gui.fbs_union_gui import UnionMark
+import logging
+# Создаем логгер для конкретного модуля
+logger = logging.getLogger(__name__)
 
-
-class OzonMode(ctk.CTkFrame):
+class OzonMode(ctk.CTkFrame, UnionMark):
     def __init__(self, parent, font, app_context):
         super().__init__(parent)
         self.font = font
@@ -137,81 +140,68 @@ class OzonMode(ctk.CTkFrame):
         if not barcode:
             return
 
-        founded_row = pd.DataFrame()
-        source = "unknown"
-
         # === 1. ПОПЫТКА ПОИСКА В БД (SQLite) ===
         try:
-            # Пытаемся найти товар в базе данных
-            # Используем прямой SQL запрос или метод менеджера, если он есть.
-            # Здесь пример универсального запроса.
-            query = """
-                SELECT * FROM product_barcodes 
-                WHERE "Штрихкод производителя" = ? OR "Штрихкод OZON" = ?
-            """
-            result = self.db.execute_query(query, (barcode, barcode))
+            result = self.db.get_product_by_barcode(barcode=barcode)
 
-            if result and len(result) > 0:
-                # Преобразуем результат БД в формат Series, совместимый с кодом
-                db_row = result[0]  # Берем первое совпадение
+            if len(result) > 0:
+                self.current_product = result.iloc[0]
+                row = result.iloc[0]  # Извлекаем первую (и единственную) строку
 
-                # Маппинг полей БД -> Поля приложения
-                # В БД поле называется "SKU OZON", в приложении ожидается "Артикул Ozon"
-                data = {
-                    "Штрихкод производителя": db_row.get("Штрихкод производителя"),
-                    "Артикул производителя": db_row.get("Артикул производителя"),
-                    "Размер": db_row.get("Размер"),
-                    "Наименование поставщика": db_row.get("Наименование поставщика", ""),
-                    "Штрихкод OZON": db_row.get("Штрихкод OZON"),
-                    "Артикул Ozon": db_row.get("SKU OZON")  # Важное сопоставление
-                }
-
-                # Создаем DataFrame из одной строки, чтобы логика ниже была единой
-                founded_row = pd.DataFrame([data])
-                source = "db"
+                # Конфигурация проверок: поле → сообщение → проигрывать звук
+                VALIDATIONS = [
+                    ("Штрихкод OZON", "⚠️ У продукта нет штрихкода OZON", True),
+                    ("Артикул Ozon", "⚠️ У продукта нет артикула OZON", False),
+                ]
+                for field, message, play_sound in VALIDATIONS:
+                    value = row.get(field)
+                    if pd.isna(value) or not value:
+                        if play_sound:
+                            play_unsuccess_scan_sound()
+                        self.show_log(message, bg_color="#FFE0E0", text_color="red")
+                        return
                 self.show_log("✅ Товар найден в БД", bg_color="#E0FFE0", text_color="green")
-
-        except Exception as e:
-            print(f"Ошибка поиска в БД: {e}")
-            # Если ошибка БД, просто идем дальше к старому методу
-
-        # === 2. ФОЛБЭК НА СТАРЫЙ МЕТОД (Excel/Context) ===
-        if founded_row.empty:
-            if self.app_context.df is None:
-                messagebox.showwarning("Ошибка", "Товар не найден в БД, а файл базы данных не загружен.")
+            else:
+                self.show_log("✅ Товар НЕ найден в БД", bg_color="#E0FFE0", text_color="red")
                 return
 
-            # Старый поиск по штрихкоду
-            founded_row = self.app_context.df[self.app_context.df["Штрихкод производителя"].astype(str) == barcode]
-            source = "context"
-
-        # === ПРОВЕРКИ РЕЗУЛЬТАТА ===
-        if founded_row.empty:
-            play_unsuccess_scan_sound()
-            self.show_log("⚠️ Штрихкод не найден ни в БД, ни в файле", bg_color="#FFE0E0", text_color="red")
-            return
-
-        # Сохраняем текущий товар
-        self.current_product = founded_row.iloc[0]
-
+        except Exception as e:
+            self.show_log(f"Ошибка поиска в БД: {e}")
+        #     # Если ошибка БД, просто идем дальше к старому методу
+        #
+        # # === 2. ФОЛБЭК НА СТАРЫЙ МЕТОД (Excel/Context) ===
+        # if founded_row.empty:
+        #     messagebox.showwarning("Ошибка", "Товар не найден в БД, а файл базы данных не загружен.")
+        #     return
+        #
+        # #     # Старый поиск по штрихкоду
+        # #     founded_row = self.app_context.df[self.app_context.df["Штрихкод производителя"].astype(str) == barcode]
+        # #     source = "context"
+        # #
+        # # # === ПРОВЕРКИ РЕЗУЛЬТАТА ===
+        # # if founded_row.empty:
+        # #     play_unsuccess_scan_sound()
+        # #     self.show_log("⚠️ Штрихкод не найден ни в БД, ни в файле", bg_color="#FFE0E0", text_color="red")
+        # #     return
+        #
+        # # Сохраняем текущий товар
+        # self.current_product = founded_row.iloc[0]
+        #
         # Проверяем наличие обязательных полей
-        ozon_barcode = self.current_product.get('Штрихкод OZON')
-        if pd.isna(ozon_barcode) or not ozon_barcode:
-            play_unsuccess_scan_sound()
-            self.show_log("⚠️ У продукта нет штрихкода OZON", bg_color="#FFE0E0", text_color="red")
-            return
+        # ozon_barcode = self.current_product.get('Штрихкод OZON')
+        # if pd.isna(ozon_barcode) or not ozon_barcode:
+        #     play_unsuccess_scan_sound()
+        #     self.show_log("⚠️ У продукта нет штрихкода OZON", bg_color="#FFE0E0", text_color="red")
+        #     return
+        #
+        # ozon_article = self.current_product.get('Артикул Ozon')
+        # if pd.isna(ozon_article) or not ozon_article:
+        #     self.show_log("⚠️ У продукта нет артикула OZON", bg_color="#FFE0E0", text_color="red")
+        #     return
+        #
+        # play_success_scan_sound()
 
-        ozon_article = self.current_product.get('Артикул Ozon')
-        if pd.isna(ozon_article) or not ozon_article:
-            self.show_log("⚠️ У продукта нет артикула OZON", bg_color="#FFE0E0", text_color="red")
-            return
-
-        play_success_scan_sound()
-        if source == "context":
-            self.show_log("✅ Код принят (из файла)", bg_color="#E0FFE0", text_color="green")
-        else:
-            self.show_log("✅ Код принят (из БД)", bg_color="#D0F0C0", text_color="darkgreen")
-
+        self.show_log("✅ Код принят (из БД)", bg_color="#D0F0C0", text_color="darkgreen")
         product_info = (
             f"{self.current_product['Артикул производителя']} | "
             f"{self.current_product['Размер']} | "
@@ -248,11 +238,14 @@ class OzonMode(ctk.CTkFrame):
         if not code:
             return
 
-        if not label_printer.is_correct_gs1_format(code):
+        # if not label_printer.is_correct_gs1_format(code):
+        #     play_unsuccess_scan_sound()
+        #     self.show_log("❌ Неверный формат кода маркировки", bg_color="#FFE0E0", text_color="red")
+        #     return
+        if not self.is_valid_chestny_znak(code):
             play_unsuccess_scan_sound()
             self.show_log("❌ Неверный формат кода маркировки", bg_color="#FFE0E0", text_color="red")
             return
-
         play_success_scan_sound()
         self.scanning_label.configure(text='Идет распечатка этикеток...')
 
@@ -378,12 +371,21 @@ class OzonMode(ctk.CTkFrame):
             self.after_cancel(self.focus_timer_id)
         self.restore_entry_focus()
 
-    def show_log(self, message, bg_color="#E0FFE0", text_color="green"):
+    def show_log(self, message, bg_color="#E0FFE0", text_color="green", is_error=False):
         """Показывает сообщение с анимацией появления и исчезновения"""
         self._log_bg_color = bg_color
         self._log_text_color = text_color
         self.log_label.configure(text=message, text_color=text_color, fg_color=bg_color)
         self.log_label.lift()
+        # --- дополнение нового вывода ----
+        if self.log_label:
+            color = "red" if is_error else "green"
+            self.log_label.configure(text=message, text_color=color)
+            if is_error:
+                logger.error(message)
+            else:
+                logger.info(message)
+        # ----------------------------------
         self.after(1500, self.animate_log_fade_out)
 
     def animate_log_fade_in(self, bg_color, text_color, alpha):

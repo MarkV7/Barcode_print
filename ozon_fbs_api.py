@@ -3,6 +3,9 @@ from typing import Optional, Dict, Any, List
 import json
 from datetime import datetime, timedelta, timezone
 import base64
+import logging
+# Создаем логгер для конкретного модуля
+logger = logging.getLogger(__name__)
 
 class OzonFBSAPI:
     """
@@ -20,6 +23,37 @@ class OzonFBSAPI:
             "Api-Key": self.api_key,
             "Content-Type": "application/json"
         })
+
+    # новый метод
+    def _request_experience(self, method: str, path: str, data: Optional[Dict] = None, params: Optional[Dict] = None,
+                 expect_json: bool = True) -> Any:
+        # Убираем лишний слэш, если он есть в начале пути
+        path = path.lstrip('/')
+        url = f"{self.BASE_URL}/{path}"
+
+        try:
+            if method == "GET":
+                response = self.session.get(url, params=params, timeout=15)
+            else:
+                response = self.session.post(url, json=data, params=params, timeout=15)
+
+            # Если статус 4xx или 5xx, это вызовет исключение HTTPError
+            response.raise_for_status()
+
+            if expect_json:
+                return response.json()
+            return response
+
+        except requests.exceptions.HTTPError as e:
+            # Читаем детали ошибки из ответа сервера (там часто пишут причину)
+            error_msg = f"HTTP Error {e.response.status_code}: {e.response.text}"
+            logger.error(f"Ozon API Error на пути {path}: {error_msg}")
+            # Возвращаем пустой словарь, чтобы GUI не падал при вызове .get()
+            return {"error": error_msg, "status_code": e.response.status_code}
+
+        except Exception as e:
+            logger.error(f"Критическая ошибка запроса Ozon: {e}")
+            return {"error": str(e)}
 
     def _request(self, method: str, path: str, data: Optional[Dict] = None, params: Optional[Dict] = None,
                  expect_json: bool = True) -> Any:
@@ -308,19 +342,206 @@ class OzonFBSAPI:
         data = {"posting_number": posting_number}
         return self._request("POST", path, data=data)
 
-    def get_fbs_returns(self, last_days: int = 7) -> List:
-        """
-        Получить список возвратов за последние N дней.
-        Помогает выявить товары, которые не были выкуплены.
-        """
-        path = "v2/returns/fbs/list"
-        # Вычисляем дату начала
-        since = (datetime.now(timezone.utc) - timedelta(days=last_days)).isoformat()
+    # def get_fbs_returns(self, last_days: int = 7) -> List:
+    #     """
+    #     Получить список возвратов за последние N дней.
+    #     Помогает выявить товары, которые не были выкуплены.
+    #     """
+    #     path = "v2/returns/fbs/list"
+    #     # Вычисляем дату начала
+    #     since = (datetime.now(timezone.utc) - timedelta(days=last_days)).isoformat()
+    #
+    #     data = {
+    #         "filter": {
+    #             "last_id": 0
+    #         },
+    #         "limit": 1000
+    #     }
+    #     return self._request("POST", path, data=data).get('returns', [])
 
+    def create_orders_report(self, date_from: str, date_to: str) -> Dict:
+        """
+        Запрос на создание отчета о реализации (postings).
+        Документация: https://docs.ozon.ru/api/seller/#operation/ReportAPI_ReportPostingCreate
+        """
+        # Был ошибочный путь v1/report/order/create
+        path = "v1/report/postings/create"
         data = {
             "filter": {
-                "last_id": 0
+                "processed_at_from": f"{date_from}T00:00:00Z",
+                "processed_at_to": f"{date_to}T23:59:59Z",
+                "delivery_schema": ["fbs"], # Указываем схему работы
+                "status": "all"
             },
-            "limit": 1000
+            "language": "DEFAULT"
         }
-        return self._request("POST", path, data=data).get('returns', [])
+        return self._request("POST", path, data=data)
+
+    def get_report_info(self, report_code: str) -> Dict:
+        """
+        Проверка статуса отчета и получение ссылки на файл.
+        Документация: https://docs.ozon.ru/api/seller/#operation/ReportAPI_ReportInfo
+        """
+        path = "v1/report/info"
+        data = {"code": report_code}
+        return self._request("POST", path, data=data)
+
+    def get_returns_list_v1_old(self, schema: str = 'FBS', days: int = 30) -> List[Dict[str, Any]]:
+        """
+        Метод для получения информации о возвратах FBO и FBS (v1).
+        https://docs.ozon.ru/api/seller/#operation/returnsList
+        """
+        path = "v1/returns/list"
+
+        # Расчет временного диапазона
+        now = datetime.now(timezone.utc)
+        date_from = now - timedelta(days=days)
+
+        # Форматирование дат строго по ISO 8601 (например, 2024-03-19T10:00:00Z)
+        time_from_str = date_from.strftime('%Y-%m-%dT%H:%M:%SZ')
+        time_to_str = now.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+        # Формируем payload согласно документации v1
+        payload = {
+            "filter": {
+                "logistic_return_date": {
+                    "time_from": time_from_str,
+                    "time_to": time_to_str
+                },
+                "return_schema": schema.upper()  # 'FBS' или 'FBO'
+            },
+            "limit": 500,
+            "last_id": 0
+        }
+
+        try:
+            logger.info(f"Ozon API: Запрос возвратов {schema} через {path} за {days} дн.")
+
+            # Используем ваш стандартный метод _request
+            response = self._request("POST", path, data=payload)
+
+            # В v1 данные обычно лежат сразу в корне ответа в ключе 'returns'
+            data = response.json() if hasattr(response, 'json') else response
+
+            returns_list = data.get('returns', [])
+
+            logger.info(f"Ozon API: Найдено возвратов: {len(returns_list)}")
+            return returns_list
+
+        except Exception as e:
+            logger.error(f"Ошибка в get_returns_list_v1: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                logger.error(f"Детали ответа сервера: {e.response.text}")
+            return []
+
+    def get_returns_list_v1_old(self, schema: str = 'FBS', days: int = 90) -> List[Dict[str, Any]]:
+        """
+        Метод v1 для получения информации о возвратах.
+        Преобразует вложенную структуру API в плоский список для БД.
+        """
+        path = "v1/returns/list"
+        now = datetime.now(timezone.utc)
+        date_from = now - timedelta(days=days)
+
+        payload = {
+            "filter": {
+                "logistic_return_date": {
+                    "time_from": date_from.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                    "time_to": now.strftime('%Y-%m-%dT%H:%M:%SZ')
+                },
+                "return_schema": schema.upper()
+            },
+            "limit": 500,
+            "last_id": 0
+        }
+
+        try:
+            logger.info(f"Ozon API: Запрос возвратов {schema} за {days} дн.")
+            response = self._request("POST", path, data=payload)
+            data = response.json() if hasattr(response, 'json') else response
+
+            raw_returns = data.get('returns', [])
+            processed_returns = []
+
+            for item in raw_returns:
+                # Извлекаем SKU и Номер отправления правильно
+                # В v1 артикул (offer_id) находится внутри product
+                product_data = item.get('product', {})
+
+                processed_returns.append({
+                    'posting_number': item.get('posting_number'),
+                    'sku': product_data.get('sku'),
+                    'return_date': item.get('logistic', {}).get('return_date'),
+                    'status_name': item.get('visual', {}).get('status', {}).get('display_name'),
+                    'quantity': product_data.get('quantity')
+                })
+
+            logger.info(f"Ozon API: Обработано {len(processed_returns)} записей.")
+            return processed_returns
+
+        except Exception as e:
+            logger.error(f"Ошибка в get_returns_list_v1: {e}")
+            return []
+
+    def get_returns_list_v1(self, schema: str = 'FBS', days: int = 90) -> List[Dict[str, Any]]:
+        """
+        Метод v1 для получения информации о возвратах.
+        Поддерживает пагинацию (last_id), чтобы обходить лимит в 500 записей.
+        """
+        path = "v1/returns/list"
+        now = datetime.now(timezone.utc)
+        date_from = now - timedelta(days=days)
+
+        time_from_str = date_from.strftime('%Y-%m-%dT%H:%M:%SZ')
+        time_to_str = now.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+        processed_returns = []
+        last_id = 0
+        has_next = True
+
+        logger.info(f"Ozon API: Запрос возвратов {schema.upper()} за {days} дн. (с пагинацией)")
+
+        while has_next:
+            payload = {
+                "filter": {
+                    "logistic_return_date": {
+                        "time_from": time_from_str,
+                        "time_to": time_to_str
+                    },
+                    "return_schema": schema.upper()
+                },
+                "limit": 500,
+                "last_id": last_id
+            }
+
+            try:
+                response = self._request("POST", path, data=payload)
+                data = response.json() if hasattr(response, 'json') else response
+
+                raw_returns = data.get('returns', [])
+
+                for item in raw_returns:
+                    product_data = item.get('product', {})
+
+                    processed_returns.append({
+                        'posting_number': item.get('posting_number'),
+                        'sku': product_data.get('sku'),
+                        'return_date': item.get('logistic', {}).get('return_date'),
+                        'status_name': item.get('visual', {}).get('status', {}).get('display_name'),
+                        'quantity': product_data.get('quantity', 1)  # Берем кол-во, по умолчанию 1
+                    })
+
+                has_next = data.get('has_next', False)
+
+                # Для следующего запроса берем ID последней записи в текущем ответе
+                if raw_returns:
+                    last_id = raw_returns[-1].get('id')
+                else:
+                    has_next = False
+
+            except Exception as e:
+                logger.error(f"Ошибка в get_returns_list_v1 (last_id={last_id}): {e}")
+                break
+
+        logger.info(f"Ozon API: Всего обработано {len(processed_returns)} записей для {schema}.")
+        return processed_returns

@@ -19,6 +19,8 @@ from gui.db_viewer_gui import DBViewerMode
 from gui.kiz_directory_gui import KizDirectoryMode
 import base64
 import logging
+# Создаем логгер для конкретного модуля
+logger = logging.getLogger(__name__)
 
 CONFIG_FILE = "config.json"
 CONTEXT_FILE = 'app_context.pkl'
@@ -30,9 +32,14 @@ ctk.set_default_color_theme("blue")
 class AppUI:
     def __init__(self, root):
         self.root = root
-        self._setup_logger()  # <--- ДОБАВИТЬ СЮДА
+        # self._setup_logger()
+        # 1. Защитный флаг готовности
+        self.is_ready = False
         self.root.title("Склад Ozon / Wildberries")
         self.root.geometry("1700x800")
+
+        # Даем системе время "осознать" размеры окна
+        self.root.update_idletasks()
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.db_manager = DBManager()
@@ -42,6 +49,7 @@ class AppUI:
 
         # Загружаем данные в контекст из конфига
         self.load_config()
+
         self.df_original = None
 
         # Настройка сетки
@@ -69,11 +77,10 @@ class AppUI:
         self.btns = {}
         btn_data = [
             # ("База данных стар.", self.show_database),
-            ("База данных (SQL)", self.show_db_viewer_page),
+            ("Справочник ШК", self.show_db_viewer_page),
             ("Справочник КИЗ", self.show_kiz_directory_page),
             ("Возврат на склад", self.show_return),
             ("ФБО Ozon", self.show_ozon),
-            # ("ФБО Ozon (New)", self.show_ozon2),
             ("ФБО Wildberries", self.show_wildberries),
             ("Wildberries ФБС", self.show_wildberries_fbs),
             ("Ozon ФБС", self.show_ozon_fbs),
@@ -107,39 +114,48 @@ class AppUI:
         # Текущий экран
         self.current_frame = None
 
-        # Вместо self.show_database() теперь вызываем приветственный экран
+        # Даем системе 200мс, чтобы полностью отрисовать главное окно,
+        # и только потом рисуем приветственный экран и разрешаем работу
+        self.root.after(200, self._finish_init)
+
+    def _finish_init(self):
+        """Финальный этап инициализации после паузы"""
         self.show_welcome_screen()
+        self.root.update()  # Принудительно обновляем состояние графики
+        self.is_ready = True
+        logger.info("✅ Приложение полностью загружено и готово к работе")
 
-    def _setup_logger(self):
-        """Настраивает логирование: удаляет дубли, ставит UTF-8 и глушит мусор."""
-        # 1. Получаем корневой логгер
-        root_logger = logging.getLogger()
 
-        # 2. Удаляем ВСЕ существующие обработчики (чтобы не было дублей)
-        if root_logger.hasHandlers():
-            root_logger.handlers.clear()
-
-        # 3. Создаем форматтер
-        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s')
-
-        # 4. Обработчик для файла (обязательно utf-8)
-        file_handler = logging.FileHandler("app.log", encoding='utf-8')
-        file_handler.setFormatter(formatter)
-        root_logger.addHandler(file_handler)
-
-        # 5. Обработчик для консоли
-        console_handler = logging.StreamHandler()
-        console_handler.setFormatter(formatter)
-        root_logger.addHandler(console_handler)
-
-        # 6. Устанавливаем уровень INFO
-        root_logger.setLevel(logging.INFO)
-
-        # 7. Глушим шумные библиотеки
-        logging.getLogger('PIL').setLevel(logging.WARNING)
-        logging.getLogger('Image').setLevel(logging.WARNING)
-        logging.getLogger('urllib3').setLevel(logging.WARNING)
-        logging.getLogger('fitz').setLevel(logging.WARNING)
+    # def _setup_logger(self):
+    #     """Настраивает логирование: удаляет дубли, ставит UTF-8 и глушит мусор."""
+    #     # 1. Получаем корневой логгер
+    #     root_logger = logging.getLogger()
+    #
+    #     # 2. Удаляем ВСЕ существующие обработчики (чтобы не было дублей)
+    #     if root_logger.hasHandlers():
+    #         root_logger.handlers.clear()
+    #
+    #     # 3. Создаем форматтер
+    #     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s')
+    #
+    #     # 4. Обработчик для файла (обязательно utf-8)
+    #     file_handler = logging.FileHandler("app.log", encoding='utf-8')
+    #     file_handler.setFormatter(formatter)
+    #     root_logger.addHandler(file_handler)
+    #
+    #     # 5. Обработчик для консоли
+    #     console_handler = logging.StreamHandler()
+    #     console_handler.setFormatter(formatter)
+    #     root_logger.addHandler(console_handler)
+    #
+    #     # 6. Устанавливаем уровень INFO
+    #     root_logger.setLevel(logging.INFO)
+    #
+    #     # 7. Глушим шумные библиотеки
+    #     logging.getLogger('PIL').setLevel(logging.WARNING)
+    #     logging.getLogger('Image').setLevel(logging.WARNING)
+    #     logging.getLogger('urllib3').setLevel(logging.WARNING)
+    #     logging.getLogger('fitz').setLevel(logging.WARNING)
 
     def show_welcome_screen(self):
         """Отрисовка приветственного экрана с быстрыми кнопками"""
@@ -176,7 +192,7 @@ class AppUI:
             button_frame,
             text="Ozon ФБС",
             width=280,
-            height=140,
+            height=100,
             font=ctk.CTkFont(size=22, weight="bold"),
             corner_radius=15,
             # Используем индекс 6 (соответствует Ozon ФБС в вашем списке btn_data)
@@ -189,7 +205,7 @@ class AppUI:
             button_frame,
             text="Wildberries ФБС",
             width=280,
-            height=140,
+            height=100,
             font=ctk.CTkFont(size=22, weight="bold"),
             corner_radius=15,
             fg_color="#7B1FA2",      # Фиолетовый WB
@@ -219,68 +235,15 @@ class AppUI:
                 data = json.load(f)
                 self.context.file_path = data.get("last_excel_path")
 
-    def save_df_to_excel(self):
-        """
-        Сохраняет DataFrame из контекста обратно в Excel по пути self.context.file_path
-        """
-        if self.context.df is not None and self.context.file_path:
-            try:
-                # Сохраняем DataFrame обратно в Excel
-                self.context.df.to_excel(self.context.file_path, index=False)
-                logging.info(f"✅ Данные успешно сохранены в {self.context.file_path}")
-            except Exception as e:
-                logging.error(f"❌ Ошибка при сохранении файла: {e}")
-        else:
-            logging.info("⚠️ Нет данных для сохранения или не указан путь к файлу")
-
-    def save_df_to_excel_cis(self):
-        """
-        Сохраняет DataFrame из контекста обратно в Excel по пути Data/
-        Создаёт резервные копии: _back и _back_back
-        """
-        temp_dir = "Data"
-        file_name = "Справочник кодов маркировки.xlsx"
-        os.makedirs(temp_dir, exist_ok=True)
-        filepath = os.path.join(temp_dir, file_name)
-
-        if self.context.df_cis is not None:
-            try:
-                # Пути к резервным копиям
-                back_file = os.path.join(temp_dir, "Справочник кодов маркировки_back.xlsx")
-                back_back_file = os.path.join(temp_dir, "Справочник кодов маркировки_back_back.xlsx")
-
-                # Если основной файл уже существует, сдвигаем копии
-                if os.path.exists(filepath):
-                    if os.path.exists(back_file):
-                        if os.path.exists(back_back_file):
-                            # Удаляем старую back_back копию
-                            os.remove(back_back_file)
-                        # Перемещаем back в back_back
-                        os.rename(back_file, back_back_file)
-                    # Перемещаем текущий файл в back
-                    os.rename(filepath, back_file)
-
-                # Проверяем, есть ли колонка "Код маркировки"
-                if "Код маркировки" in self.context.df_cis.columns:
-                    # Кодируем значения в Base64
-                    # self.context.df_cis["Код маркировки"] = self.context.df_cis["Код маркировки"].apply(
-                    #     lambda x: base64.b64encode(x.encode('utf-8')).decode('utf-8') if pd.notna(x) else x)
-                    # Удаляем из строки подстроку с управляющими символами: 91EE11
-                    self.context.df_cis["Код маркировки"] = self.context.df_cis["Код маркировки"].apply(
-                        lambda x: x.replace('\x1D91EE11\x1D', '') if pd.notna(x) and isinstance(x, str) else x
-                    )
-
-                # Сохраняем новый DataFrame в основной файл
-                self.context.df_cis.to_excel(filepath, index=False)
-                logging.info(f"✅ Данные успешно сохранены в {filepath}")
-
-            except Exception as e:
-                logging.error(f"❌ Ошибка при сохранении файла: {e}")
-        else:
-            logging.info("⚠️ Нет данных для сохранения Справочника кодов маркировки")
 
     def set_active_and_show(self, screen_func, index):
+        # Если флаг готовности еще False — игнорируем нажатие
+        if not getattr(self, "is_ready", False):
+            logger.info("⏳ Ожидание завершения инициализации...")
+            return
         self.set_active(index)
+        # Добавляем принудительное обновление перед сменой экрана
+        self.root.update_idletasks()
         screen_func()
 
     def set_active(self, index):
@@ -303,6 +266,8 @@ class AppUI:
                 # Если форма (FBSModeOzon/WB) имеет наш кастомный метод destroy(),
                 # он отменит все self.after() таймеры.
                 self.current_frame.destroy()
+                # После уничтожения даем системе миг, чтобы очистить память
+                self.root.update()
             except Exception:
                 # На случай, если что-то пошло не так при уничтожении,
                 # просто игнорируем, чтобы избежать краша в app_ui.py.
@@ -345,14 +310,6 @@ class AppUI:
         frame.pack(fill="both", expand=True)
         self.current_frame = frame
 
-    # def show_autosborka_fbs(self):
-    #     self._clear_content()
-    #     frame = FBSMode(
-    #         self.content_frame, self.font_normal, self.context
-    #     )
-    #     frame.pack(fill="both", expand=True)
-    #     self.current_frame = frame
-
     def show_wildberries_fbs(self):
         self._clear_content()
         frame = FBSModeWB(
@@ -383,6 +340,7 @@ class AppUI:
                              self.font_normal, self.db_manager, self.context)
         frame.pack(fill="both", expand=True)
         self.current_frame = frame
+
     def show_kiz_directory_page(self):
         """Переключение на просмотр базы данных из SQL"""
         self._clear_content()
@@ -409,49 +367,20 @@ class AppUI:
             try:
                 self.current_frame.save_data_to_context()
             except Exception as e:
-                logging.info(f"[on_close] Ошибка при сохранении данных экрана: {e}")
-        if self.has_unsaved_changes():
-            answer = messagebox.askyesnocancel(
-                "Несохраненные изменения",
-                "В изначальную базу данных в Excel файле были внесены изменения.\n"
-                "Хотите ли вы сохранить их в файле?"
-            )
-            if answer == True:
-                self.save_df_to_excel()
-            elif answer == None:
-                return
+                logger.info(f"[on_close] Ошибка при сохранении данных экрана: {e}")
+        # if self.has_unsaved_changes():
+        #     answer = messagebox.askyesnocancel(
+        #         "Несохраненные изменения",
+        #         "В изначальную базу данных в Excel файле были внесены изменения.\n"
+        #         "Хотите ли вы сохранить их в файле?"
+        #     )
+        #     if answer == True:
+        #         self.save_df_to_excel()
+        #     elif answer == None:
+        #         return
 
-        # self.save_df_to_excel_cis()
         self.save_config()
         self.context.save_to_file(CONTEXT_FILE)
         self.root.destroy()
 
-    def has_unsaved_changes(self):
-        if self.context.df is None or self.df_original is None:
-            return False
 
-        try:
-            df1 = self.df_original
-            df2 = self.context.df
-
-            # Оставляем только общие столбцы
-            common_cols = sorted(set(df1.columns) & set(df2.columns))
-            df1 = df1[common_cols]
-            df2 = df2[common_cols]
-
-            # Приводим все значения к строкам, заменяем NaN, None и т.п. на ''
-            df1_str = df1.astype(str).replace(
-                ['nan', 'NaN', 'None', 'none', 'null', ''], '', regex=False)
-            df2_str = df2.astype(str).replace(
-                ['nan', 'NaN', 'None', 'none', 'null', ''], '', regex=False)
-
-            # Сбрасываем индексы
-            df1_str.reset_index(drop=True, inplace=True)
-            df2_str.reset_index(drop=True, inplace=True)
-
-            # Сравниваем как строки
-            return not df1_str.equals(df2_str)
-
-        except Exception as e:
-            logging.error(f"[Ошибка] {e}")
-            return True  # На всякий случай считаем, что изменения есть

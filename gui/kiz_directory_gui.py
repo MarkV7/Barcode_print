@@ -4,7 +4,8 @@ from tkinter import messagebox
 from gui.gui_table2 import EditableDataTable
 from sqlalchemy import text
 import logging
-
+# Создаем логгер для конкретного модуля
+logger = logging.getLogger(__name__)
 
 class KizDirectoryMode(ctk.CTkFrame):
     def __init__(self, parent, font, db_manager):
@@ -97,11 +98,41 @@ class KizDirectoryMode(ctk.CTkFrame):
     def load_data(self):
         try:
             with self.db.engine.connect() as conn:
+                # 1. Загружаем чистый DataFrame из БД без приведения к astype(str)
+                query = text('SELECT * FROM marking_codes ORDER BY "Время добавления" DESC')
+                df = pd.read_sql(query, conn)
+
+            logger.info(f"Справочник КИЗ: Загружено {len(df)} записей.")
+
+            # 2. Обрабатываем даты, пока они еще не стали обычными строками
+            for col in ["Время добавления", "Дата обновления"]:
+                if col in df.columns:
+                    # format='mixed' позволяет читать даты как с микросекундами, так и без
+                    # errors='coerce' превратит битые данные в пустоту (NaT) вместо вылета ошибки
+                    df[col] = pd.to_datetime(df[col], errors='coerce', format='mixed')
+
+                    # Сразу форматируем в красивую строку
+                    # .dt.strftime работает только с объектами datetime
+                    df[col] = df[col].dt.strftime('%d.%m.%Y %H:%M')
+
+            # 3. Теперь, когда даты отформатированы, приводим ВСЕ остальное к строкам
+            # Добавляем 'NaT' в список замены, так как пустые даты превращаются в этот символ
+            self.df_full = df.fillna('').astype(str).replace(['None', 'nan', 'NaT'], '')
+
+            self.apply_filters()
+        except Exception as e:
+            # Добавил exc_info=True, чтобы в логах была видна точная строка ошибки
+            logger.error(f"Ошибка загрузки КИЗ: {e}", exc_info=True)
+            self.render_table(pd.DataFrame())
+
+    def load_data_old(self):
+        try:
+            with self.db.engine.connect() as conn:
                 # Сортируем по времени добавления (новые сверху)
                 query = text('SELECT * FROM marking_codes ORDER BY "Время добавления" DESC')
                 self.df_full = pd.read_sql(query, conn).fillna('').astype(str).replace(['None', 'nan'], '')
 
-            logging.info(f"Справочник КИЗ: Загружено {len(self.df_full)} записей.")
+            logger.info(f"Справочник КИЗ: Загружено {len(self.df_full)} записей.")
 
             # Приведение дат к красивому виду (если они не пустые)
             for col in ["Время добавления", "Дата обновления"]:
@@ -110,7 +141,7 @@ class KizDirectoryMode(ctk.CTkFrame):
 
             self.apply_filters()
         except Exception as e:
-            logging.error(f"Ошибка загрузки КИЗ: {e}")
+            logger.error(f"Ошибка загрузки КИЗ: {e}")
             self.render_table(pd.DataFrame())
 
     def _setup_table_events(self):
@@ -126,7 +157,7 @@ class KizDirectoryMode(ctk.CTkFrame):
             # Дополнительно: разрешаем выбор строки
             self.table.tree.configure(selectmode="browse")
 
-            logging.info("События двойного клика для КИЗ принудительно переназначены.")
+            logger.info("События двойного клика для КИЗ принудительно переназначены.")
 
     def render_table(self, df):
         """Отрисовка таблицы с принудительной активацией редактирования"""
@@ -159,7 +190,7 @@ class KizDirectoryMode(ctk.CTkFrame):
             self.table.tree.unbind("<Double-1>")
             # Вешаем новый напрямую на метод объекта
             self.table.tree.bind("<Double-1>", self.table._on_double_click, add="+")
-            logging.info("Бинд Double-Click применен принудительно")
+            # logger.info("Бинд Double-Click применен принудительно")
 
         self.after(200, bind_now)
 
@@ -221,12 +252,12 @@ class KizDirectoryMode(ctk.CTkFrame):
 
                     conn.execute(query, params)
 
-            logging.info("Справочник КИЗ: Изменения в БД успешно сохранены.")
+            logger.info("Справочник КИЗ: Изменения в БД успешно сохранены.")
             messagebox.showinfo("Успех", "Данные успешно обновлены в базе!")
             self.load_data()  # Перезагружаем, чтобы обновить "Дата обновления" на экране
 
         except Exception as e:
-            logging.error(f"Ошибка при сохранении КИЗ: {e}", exc_info=True)
+            logger.error(f"Ошибка при сохранении КИЗ: {e}", exc_info=True)
             messagebox.showerror("Ошибка сохранения", f"Не удалось сохранить изменения:\n{e}")
 
     def apply_filters(self):
@@ -275,9 +306,9 @@ class KizDirectoryMode(ctk.CTkFrame):
                         {"code": kiz_code}
                     )
 
-            logging.info(f"Удалено {len(selected)} записей из КИЗ")
+            logger.info(f"Удалено {len(selected)} записей из КИЗ")
             self.load_data()
             messagebox.showinfo("Успех", "Записи удалены")
         except Exception as e:
-            logging.error(f"Ошибка удаления КИЗ: {e}")
+            logger.error(f"Ошибка удаления КИЗ: {e}")
             messagebox.showerror("Ошибка", f"Не удалось удалить:\n{e}")

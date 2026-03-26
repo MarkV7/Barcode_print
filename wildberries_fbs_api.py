@@ -3,7 +3,8 @@ from typing import Optional, Dict, Any
 from datetime import datetime, timedelta, timezone
 import time
 import logging
-
+# Создаем логгер для конкретного модуля
+logger = logging.getLogger(__name__)
 class WildberriesFBSAPI:
     """
     Модуль для работы с API Wildberries FBS (Fulfillment by Seller).
@@ -113,30 +114,36 @@ class WildberriesFBSAPI:
         response.raise_for_status()
         return response.json()
 
-    def add_order_to_supply(self, supply_id: str, order_id: int) -> Dict:
+    def add_order_to_supply(self, supply_id: str, order_id: int) -> Any:
         """
-        Добавить сборочные задания в поставку.
-        supply_id: ID поставки
-        order_ids: список ID сборочных заданий (orders)
-        Возвращает: dict с результатом
+        Добавить сборочное задание в поставку (WB API v3).
         """
-        url = f"{self.BASE_URL}/api/v3/supplies/{supply_id}/orders/{order_id}"
-        # url = f"{self.BASE_URL}/api/v3/supplies/{supply_id}/orders"
-        # url = f'{self.BASE_URL}/api/marketplace/v3/supplies/{supply_id}/orders'
-        # url = f"{self.BASE_URL}/api/v3/supplies/{supply_id}/orders"
-        # data = {"orders": [order_id]}
-        # response = self.session.patch(url, json=data)
+        # 1. Правильный URL для v3
+        url = f"{self.BASE_URL}/api/v3/supplies/{supply_id}/orders"
 
-        # Для этого метода тело запроса (json) больше не требуется
-        response = self.session.patch(url)
-        # Если заказ уже в другой поставке или возник конфликт,
-        # добавим обработку, чтобы не «падать»
-        if response.status_code == 409:
-            logging.warning(f"Заказ {order_id} уже находится в поставке или возник конфликт.")
+        # 2. ВНИМАНИЕ: Ключ должен быть 'orderIds', а не 'orders'
+        data = {"orderIds": [int(order_id)]}
+
+        try:
+            response = self.session.patch(url, json=data)
+
+            # Если 404, значит WB решил пошалить с версиями, пробуем старый путь
+            if response.status_code in [404, 405]:
+                logger.info(f"Метод v3 не найден (404/405), пробуем v2 для заказа {order_id}...")
+                url_v2 = f"{self.BASE_URL}/api/v3/supplies/{supply_id}/orders/{order_id}"
+                response = self.session.patch(url_v2)
+
+            # Обработка конфликта (уже в другой поставке)
+            if response.status_code == 409:
+                logger.warning(f"Заказ {order_id} уже находится в другой поставке (409).")
+                return response
+
+            response.raise_for_status()
             return response
 
-        response.raise_for_status()
-        return response
+        except Exception as e:
+            logger.error(f"Критическая ошибка WB API при добавлению в поставку: {e}")
+            raise
 
     def close_supply_complete(self, supplyId: str) -> Dict:
         """

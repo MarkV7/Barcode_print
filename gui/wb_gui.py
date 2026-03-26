@@ -4,13 +4,19 @@ import customtkinter as ctk
 import pandas as pd
 from datetime import datetime
 from tkinter import messagebox
+
+from gui.fbs_union_gui import UnionMark
 from gui.gui_table import EditableDataTable
 from sound_player import play_success_scan_sound, play_unsuccess_scan_sound
 from printer_handler import LabelPrinter
 from db_manager import DBManager  # <--- ИМПОРТ МЕНЕДЖЕРА БД
+from gui.fbs_union_gui import UnionMark
+import logging
+import sys
+# Создаем логгер для конкретного модуля
+logger = logging.getLogger(__name__)
 
-
-class WildberriesMode(ctk.CTkFrame):
+class WildberriesMode(ctk.CTkFrame, UnionMark):
     def __init__(self, parent, font, app_context):
         super().__init__(parent)
         self.font = font
@@ -136,79 +142,72 @@ class WildberriesMode(ctk.CTkFrame):
         if not barcode:
             return
 
-        founded_row = pd.DataFrame()
-        source = "unknown"
-
         # === 1. ПОПЫТКА ПОИСКА В БД (SQLite) - ТОЛЬКО ЧТЕНИЕ ===
         try:
-            # Пытаемся найти товар по штрихкоду производителя или баркоду WB
-            query = """
-                SELECT * FROM product_barcodes 
-                WHERE "Штрихкод производителя" = ? OR "Баркод  Wildberries" = ?
-            """
-            result = self.db.execute_query(query, (barcode, barcode))
+            result = self.db.get_product_by_barcode(barcode=barcode)
 
-            if result and len(result) > 0:
-                # Преобразуем результат БД в формат Series/DataFrame
-                db_row = result[0]
+            if len(result) > 0:
+                self.current_product = result.iloc[0]
+                row = result.iloc[0]  # Извлекаем первую (и единственную) строку
 
-                data = {
-                    "Штрихкод производителя": db_row.get("Штрихкод производителя"),
-                    "Артикул производителя": db_row.get("Артикул производителя"),
-                    "Размер": db_row.get("Размер"),
-                    "Наименование поставщика": db_row.get("Наименование поставщика", ""),
-                    "Баркод  Wildberries": db_row.get("Баркод  Wildberries"),
-                    "Артикул Вайлдбериз": db_row.get("Баркод  Wildberries")  # Используем баркод как артикул WB для FBO
-                }
-
-                founded_row = pd.DataFrame([data])
-                source = "db"
+                # Конфигурация проверок: поле → сообщение → проигрывать звук
+                VALIDATIONS = [
+                    ("Баркод  Wildberries", "⚠️ У продукта нет Баркод  Wildberries", True),
+                    ("Артикул Вайлдбериз", "⚠️ У продукта нет Артикул Вайлдбериз", False),
+                ]
+                for field, message, play_sound in VALIDATIONS:
+                    value = row.get(field)
+                    if pd.isna(value) or not value:
+                        if play_sound:
+                            play_unsuccess_scan_sound()
+                        self.show_log(message, bg_color="#FFE0E0", text_color="red")
+                        return
                 self.show_log("✅ Товар найден в БД", bg_color="#E0FFE0", text_color="green")
+            else:
+                self.show_log("✅ Товар НЕ найден в БД", bg_color="#E0FFE0", text_color="red")
+                return
 
         except Exception as e:
-            print(f"Ошибка поиска в БД: {e}")
+            self.show_log(f"Ошибка поиска в БД: {e}")
             # Если ошибка БД, идем к старому методу
 
         # === 2. ФОЛБЭК НА СТАРЫЙ МЕТОД (Excel/Context) ===
-        if founded_row.empty:
-            if self.app_context.df is None:
-                messagebox.showwarning("Ошибка", "Товар не найден в БД, а файл базы данных не загружен.")
-                return
+        # if founded_row.empty:
+        #     messagebox.showwarning("Ошибка", "Товар не найден в БД, а файл базы данных не загружен.")
+        #     return
 
-            # Старый поиск по штрихкоду
-            founded_row = self.app_context.df[self.app_context.df["Штрихкод производителя"].astype(str) == barcode]
-            source = "context"
-
-        # === ПРОВЕРКИ РЕЗУЛЬТАТА ===
-        if founded_row.empty:
-            play_unsuccess_scan_sound()
-            self.show_log("⚠️ Штрихкод не найден", bg_color="#FFE0E0", text_color="red")
-            return
+        #     # Старый поиск по штрихкоду
+        #     founded_row = self.app_context.df[self.app_context.df["Штрихкод производителя"].astype(str) == barcode]
+        #     source = "context"
+        #
+        # # === ПРОВЕРКИ РЕЗУЛЬТАТА ===
+        # if founded_row.empty:
+        #     play_unsuccess_scan_sound()
+        #     self.show_log("⚠️ Штрихкод не найден", bg_color="#FFE0E0", text_color="red")
+        #     return
 
         # Сохраняем текущий товар
-        self.current_product = founded_row.iloc[0]
+        # self.current_product = founded_row.iloc[0]
 
         # !!! ВНИМАНИЕ: УБРАН БЛОК СОХРАНЕНИЯ В БД (save_product_to_db) !!!
         # Мы только читаем. Если товара нет в БД, работаем с данными из файла, но не сохраняем их.
 
         # Проверка полей
-        wb_barcode = self.current_product.get('Баркод  Wildberries') or self.current_product.get('Баркод Wildberries')
-        if pd.isna(wb_barcode) or not wb_barcode:
-            play_unsuccess_scan_sound()
-            self.show_log("⚠️ У продукта нет баркода Wildberries", bg_color="#FFE0E0", text_color="red")
-            return
+        # wb_barcode = self.current_product.get('Баркод  Wildberries') or self.current_product.get('Баркод Wildberries')
+        # if pd.isna(wb_barcode) or not wb_barcode:
+        #     play_unsuccess_scan_sound()
+        #     self.show_log("⚠️ У продукта нет баркода Wildberries", bg_color="#FFE0E0", text_color="red")
+        #     return
+        #
+        # wb_article = self.current_product.get('Артикул Вайлдбериз')
+        # if pd.isna(wb_article) or not wb_article:
+        #     self.show_log("⚠️ У продукта нет артикула Wildberries", bg_color="#FFE0E0", text_color="red")
+        #     return
+        #
+        # play_success_scan_sound()
 
-        wb_article = self.current_product.get('Артикул Вайлдбериз')
-        if pd.isna(wb_article) or not wb_article:
-            self.show_log("⚠️ У продукта нет артикула Wildberries", bg_color="#FFE0E0", text_color="red")
-            return
 
-        play_success_scan_sound()
-        if source == "context":
-            self.show_log("✅ Код принят (из файла)", bg_color="#E0FFE0", text_color="green")
-        else:
-            self.show_log("✅ Код принят (из БД)", bg_color="#D0F0C0", text_color="darkgreen")
-
+        self.show_log("✅ Код принят (из БД)", bg_color="#D0F0C0", text_color="darkgreen")
         product_info = (
             f"{self.current_product['Артикул производителя']} | "
             f"{self.current_product['Размер']} | "
@@ -243,11 +242,14 @@ class WildberriesMode(ctk.CTkFrame):
         if not code:
             return
 
-        if not label_printer.is_correct_gs1_format(code):
+        # if not label_printer.is_correct_gs1_format(code):
+        #     play_unsuccess_scan_sound()
+        #     self.show_log("❌ Неверный формат кода маркировки", bg_color="#FFE0E0", text_color="red")
+        #     return
+        if not self.is_valid_chestny_znak(code):
             play_unsuccess_scan_sound()
             self.show_log("❌ Неверный формат кода маркировки", bg_color="#FFE0E0", text_color="red")
             return
-
         play_success_scan_sound()
         self.scanning_label.configure(text='Идет распечатка этикеток...')
         filename = '__temp_label_print__.png'
@@ -359,11 +361,20 @@ class WildberriesMode(ctk.CTkFrame):
             self.after_cancel(self.focus_timer_id)
         self.restore_entry_focus()
 
-    def show_log(self, message, bg_color="#E0FFE0", text_color="green"):
+    def show_log(self, message, bg_color="#E0FFE0", text_color="green",is_error=False):
         self._log_bg_color = bg_color
         self._log_text_color = text_color
         self.log_label.configure(text=message, text_color=text_color, fg_color=bg_color)
         self.log_label.lift()
+        # --- дополнение нового вывода ----
+        if self.log_label:
+            color = "red" if is_error else "green"
+            self.log_label.configure(text=message, text_color=color)
+            if is_error:
+                logger.error(message)
+            else:
+                logger.info(message)
+        # ----------------------------------
         self.after(1500, self.animate_log_fade_out)
 
     def animate_log_fade_out(self, step=10, current_step=0):

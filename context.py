@@ -2,11 +2,13 @@ import pandas as pd
 import os
 import json
 import pickle
-
+import logging
+# Создаем логгер для конкретного модуля
+logger = logging.getLogger(__name__)
 class AppContext:
     def __init__(self):
-        self.df: pd.DataFrame = None  # Данные из Excel -> готовим к удалению
-        self.df_barcode_WB: pd.DataFrame = None  # Данные из Excel -> готовим к удалению
+        # self.df: pd.DataFrame = None  # Данные из Excel -> готовим к удалению
+        # self.df_barcode_WB: pd.DataFrame = None  # Данные из Excel -> готовим к удалению
         self.file_path: str = None   # Путь к файлу
         self.file_path2: str = None  # Путь к файлу База штрихкодов WB
         self.return_table_df: pd.DataFrame = None  # Таблица возврата
@@ -32,8 +34,8 @@ class AppContext:
             "wb_api_token": self.wb_api_token,
             "ozon_client_id": self.ozon_client_id,
             "ozon_api_key": self.ozon_api_key,
-            "df": self.df.to_dict(orient='records') if isinstance(self.df, pd.DataFrame) else None,
-            "df_barcode_WB": self.df.to_dict(orient='records') if isinstance(self.df_barcode_WB, pd.DataFrame) else None,
+            # "df": self.df.to_dict(orient='records') if isinstance(self.df, pd.DataFrame) else None,
+            # "df_barcode_WB": self.df.to_dict(orient='records') if isinstance(self.df_barcode_WB, pd.DataFrame) else None,
             "file_path": self.file_path,
             "file_path2": self.file_path2,
             "return_table_df": self.return_table_df.to_dict(orient='records') if isinstance(self.return_table_df, pd.DataFrame) else None,
@@ -47,13 +49,12 @@ class AppContext:
         if filepath.endswith(".pkl"):
             with open(filepath, "wb") as f:
                 pickle.dump(data, f)
-            print(f"✅ Контекст успешно сохранён в {filepath} (формат: pickle)")
+            logger.info(f"✅ Контекст успешно сохранён в {filepath} (формат: pickle)")
             # self.save_df_to_parquet()
         elif filepath.endswith(".json"):
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False)
-            print(f"✅ Контекст успешно сохранён в {filepath} (формат: json)")
-            # self.save_df_to_parquet()
+            logger.info(f"✅ Контекст успешно сохранён в {filepath} (формат: json)")
         else:
             raise ValueError("Неподдерживаемый формат файла. Используйте .pkl или .json")
 
@@ -79,8 +80,8 @@ class AppContext:
             self.ozon_api_key = data.get("ozon_api_key", "")
             self.file_path = data.get("file_path", None)
             self.file_path2 = data.get("file_path2", None)
-            self.df = pd.DataFrame(data["df"]) if data.get("df") else None
-            self.df_barcode_WB = pd.DataFrame(data["df_barcode_WB"]) if data.get("df_barcode_WB") else None
+            # self.df = pd.DataFrame(data["df"]) if data.get("df") else None
+            # self.df_barcode_WB = pd.DataFrame(data["df_barcode_WB"]) if data.get("df_barcode_WB") else None
             self.return_table_df = pd.DataFrame(data["return_table_df"]) if data.get("return_table_df") else None
             self.fbo_table_ozon = pd.DataFrame(data["fbo_table_ozon"]) if data.get("fbo_table_ozon") else None
             self.fbo_table_wb = pd.DataFrame(data["fbo_table_wb"]) if data.get("fbo_table_wb") else None
@@ -89,6 +90,6 @@ class AppContext:
             self.ozon_fbs_order_id = data.get("ozon_fbs_order_id", "")
             self.wb_fbs_supply_id = data.get("wb_fbs_supply_id", "")
 
-            print(f"✅ Контекст успешно загружен из {filepath}")
+            logger.info(f"✅ Контекст успешно загружен из {filepath}")
         except Exception as e:
-            print(f"❌ Ошибка при загрузке контекста: {e}")
+            logger.error(f"❌ Ошибка при загрузке контекста: {e}")

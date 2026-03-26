@@ -4,6 +4,10 @@ import pandas as pd
 from tkinter import messagebox
 from gui.gui_table import EditableDataTable
 from sound_player import play_success_scan_sound, play_unsuccess_scan_sound
+from db_manager import DBManager  #  ИМПОРТ МЕНЕДЖЕРА БД
+import logging
+# Создаем логгер для конкретного модуля
+logger = logging.getLogger(__name__)
 
 
 class ReturnMode(ctk.CTkFrame):
@@ -14,7 +18,8 @@ class ReturnMode(ctk.CTkFrame):
         self.editing = False
         self.focus_timer_id = None
         self.clear_timer_id = None
-
+        # Инициализация менеджера БД
+        self.db = DBManager()
         # Заголовок
         self.title_label = ctk.CTkLabel(
             self,
@@ -65,12 +70,12 @@ class ReturnMode(ctk.CTkFrame):
         else:
             self.return_df = pd.DataFrame(columns=["Артикул производителя", "Размер", "Кол-во", "Коробка"])
         # Определяем список колонок, которые используются в логике обработки (строка 135)
-        column_names = ["Артикул", "Размер", "Штрихкод", "Код маркировки", "Статус"]
+        self.column_names = ["Артикул", "Размер", "Штрихкод", "Код маркировки", "Статус"]
         # Таблица
         self.table = EditableDataTable(
             self.table_container,
             dataframe=self.return_df,
-            columns=column_names,
+            columns=self.column_names,
             header_font=("Segoe UI", 14, "bold"),
             cell_font=("Segoe UI", 14),
             readonly=False,
@@ -149,6 +154,64 @@ class ReturnMode(ctk.CTkFrame):
         if not barcode:
             return
 
+        self.scan_entry.delete(0, tk.END)
+
+        try:
+            result = self.db.get_product_by_barcode(barcode=barcode)
+
+            if len(result) > 0:
+                art = result["Артикул производителя"].iloc[0]
+                size = result["Размер"].iloc[0]
+
+                if "Коробка" in result.columns:
+                    box_raw = result["Коробка"].iloc[0]
+                    box = "-" if pd.isna(box_raw) or box_raw is None or box_raw == "" else str(box_raw)
+                else:
+                    box = "-"
+
+                # Обновление или добавление записи
+                mask = (
+                        (self.return_df["Артикул производителя"] == art) &
+                        (self.return_df["Размер"] == size)
+                )
+                if mask.any():
+                    idx = self.return_df.index[mask].tolist()[0]
+                    current_value = self.return_df.at[idx, "Кол-во"]
+
+                    try:
+                        current_value = int(current_value)
+                    except (ValueError, TypeError):
+                        current_value = 0
+
+                    self.return_df.at[idx, "Кол-во"] = current_value + 1
+                else:
+                    new_row = pd.DataFrame([{
+                        "Артикул производителя": art,
+                        "Размер": size,
+                        "Кол-во": 1,
+                        "Коробка": box
+                    }])
+                    self.return_df = pd.concat([self.return_df, new_row], ignore_index=True)
+
+                # Обновляем лог
+                play_success_scan_sound()
+                self.show_log(f"✅ Добавлен: {art} | {size}", bg_color="#E0FFE0", text_color="green")
+                self.update_table()
+                self.on_edit_end()
+            else:
+                self.show_log(f"✅ Информации по товару : {barcode} в Базе данных не найдено")
+        except Exception as e:
+            self.show_log(f"Ошибка при поиске штрихкода: {e}")
+            # self.scanning_label.configure(text="Ошибка БД", text_color="red")
+
+        # Через 2 секунды очищаем лог
+        self.after(2000, lambda: self.log_label.configure(text=""))
+
+    def handle_barcode_old(self, event=None):
+        barcode = self.scan_entry.get().strip()
+        if not barcode:
+            return
+
         self.scan_entry.delete(0, "end")
 
         if self.app_context.df is None:
@@ -202,13 +265,21 @@ class ReturnMode(ctk.CTkFrame):
         # Через 2 секунды очищаем лог
         self.after(2000, lambda: self.log_label.configure(text=""))
 
-    def show_log(self, message, bg_color="#E0FFE0", text_color="green"):
+    def show_log(self, message, bg_color="#E0FFE0", text_color="green",is_error=False):
         """Показывает сообщение с анимацией появления и исчезновения"""
         self._log_bg_color = bg_color
         self._log_text_color = text_color
         self.log_label.configure(text=message, text_color=text_color, fg_color=bg_color)
         self.log_label.lift()
-
+        # --- дополнение нового вывода ----
+        if self.log_label:
+            color = "red" if is_error else "green"
+            self.log_label.configure(text=message, text_color=color)
+            if is_error:
+                logger.error(message)
+            else:
+                logger.info(message)
+        # ----------------------------------
         # Показываем сразу (без анимации появления)
         self.after(1500, self.animate_log_fade_out)
 
@@ -269,10 +340,12 @@ class ReturnMode(ctk.CTkFrame):
         self.table = EditableDataTable(
             self.table_container,
             dataframe=self.return_df,
+            columns=self.column_names,
             header_font=("Segoe UI", 14, "bold"),
             cell_font=("Segoe UI", 14),
             readonly=False,
             on_edit_start=self.on_edit_start,
+            on_row_select=self.on_row_selected,
             on_edit_end=self.on_edit_end
         )
         self.table.pack(fill="both", expand=True)
