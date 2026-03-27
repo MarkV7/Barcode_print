@@ -863,152 +863,6 @@ class DBManager:
         logger.info(f"Синхронизация завершена. Обновлено статусов: {updated_count}")
         return updated_count
 
-    def sync_ozon_returns_old2(self, returns_list):
-        """
-        Обновление статусов в marking_codes на основе данных API.
-        """
-        if not returns_list:
-            return 0
-
-        updated_count = 0
-
-        # Группируем данные из API: {номер_заказа: {sku: количество}}
-        processed_returns = {}
-        for item in returns_list:
-            # Используем ключи, которые приходят из нашего нового метода get_returns_list_v1
-            order_id = item.get('posting_number')
-            sku = str(item.get('sku'))
-            status_ozon = item.get('status_name') or "Принят"
-
-            if not order_id or sku == "None":
-                continue
-
-            if order_id not in processed_returns:
-                processed_returns[order_id] = {}
-
-            if sku not in processed_returns[order_id]:
-                processed_returns[order_id][sku] = {
-                    'qty': 0,
-                    'status': status_ozon
-                }
-            processed_returns[order_id][sku]['qty'] += 1
-
-        with self.engine.connect() as conn:
-            for order_id, skus in processed_returns.items():
-                for sku, info in skus.items():
-                    # Поиск по актуальным именам колонок: "Номер отправления", "sku", "Статус"
-                    # Ищем и 'Отгружен' (статус по умолчанию), и 'Выкуплен'
-                    find_query = text("""
-                        SELECT "Код маркировки" FROM marking_codes 
-                        WHERE "Номер отправления" = :order_id 
-                        AND "sku" = :sku 
-                        AND "Статус" IN ('Отгружен', 'Выкуплен')
-                        ORDER BY "Время добавления" ASC
-                    """)
-
-                    rows = conn.execute(find_query, {"order_id": order_id, "sku": sku}).fetchall()
-
-                    # Обновляем ровно столько штук, сколько пришло в отчете о возвратах
-                    to_update = rows[:info['qty']]
-
-                    for row in to_update:
-                        new_status = f"Возврат: {info['status']}"
-
-                        # Обновление по колонкам: "Статус", "Дата обновления", "Код маркировки"
-                        update_query = text("""
-                            UPDATE marking_codes 
-                            SET "Статус" = :new_status,
-                                "Дата обновления" = CURRENT_TIMESTAMP
-                            WHERE "Код маркировки" = :code
-                        """)
-                        conn.execute(update_query, {"new_status": new_status, "code": row[0]})
-                        updated_count += 1
-
-            conn.commit()
-
-        logger.info(f"Синхронизация завершена. Обновлено статусов: {updated_count}")
-        return updated_count
-
-    def sync_ozon_returns_old(self, returns_list):
-        """
-        Обновление статусов в marking_codes на основе данных API v1.
-        """
-        if not returns_list:
-            return 0
-
-        updated_count = 0
-
-        # 1. Группируем возвраты из API
-        processed_returns = {}
-        for item in returns_list:
-            posting_number = item.get('posting_number')
-            sku = str(item.get('sku'))
-            status_ozon = item.get('status_name') or "Принят"
-
-            if not posting_number or sku == "None":
-                continue
-
-            if posting_number not in processed_returns:
-                processed_returns[posting_number] = {}
-
-            if sku not in processed_returns[posting_number]:
-                processed_returns[posting_number][sku] = {'qty': 0, 'status': status_ozon}
-
-            processed_returns[posting_number][sku]['qty'] += 1
-
-        # 2. Работа с базой
-        with self.engine.connect() as conn:
-            for posting_number, skus in processed_returns.items():
-                for sku, info in skus.items():
-                    # УБИРАЕМ строгий фильтр по статусу 'Выкуплен'.
-                    # Ищем любую запись с этим posting_number и sku, которая еще НЕ является возвратом.
-                    find_query = text("""
-                        SELECT "Код маркировки", "Статус" FROM marking_codes 
-                        WHERE "Номер отправления" = :posting_number 
-                        AND "sku" = :sku 
-                        AND "Статус" NOT LIKE 'Возврат%'
-                        ORDER BY "Время добавления" ASC
-                    """)
-
-                    rows = conn.execute(find_query, {"posting_number": posting_number, "sku": sku}).fetchall()
-
-                    if not rows:
-                        # Если не нашли, попробуем поискать по "Артикулу поставщика",
-                        # так как иногда SKU в базе и offer_id в Ozon могут не совпадать
-                        find_alt_query = text("""
-                            SELECT "Код маркировки" FROM marking_codes 
-                            WHERE "Номер отправления" = :posting_number 
-                            AND "Артикул поставщика" = :sku
-                            AND "Статус" NOT LIKE 'Возврат%'
-                        """)
-                        rows = conn.execute(find_alt_query, {"posting_number": posting_number, "sku": sku}).fetchall()
-
-                    # Обновляем ровно столько штук, сколько пришло возвратов в API
-                    to_update = rows[:info['qty']]
-
-                    if not to_update:
-                        logger.warning(f"DB: Не найден КИЗ для заказа {posting_number} (SKU: {sku})")
-                        continue
-
-                    for row in to_update:
-                        new_status = f"Возврат: {info['status']}"
-
-                        update_query = text("""
-                            UPDATE marking_codes 
-                            SET "Статус" = :new_status,
-                                "Дата обновления" = datetime('now', 'localtime')
-                            WHERE "Код маркировки" = :code
-                        """)
-                        conn.execute(update_query, {
-                            "new_status": new_status,
-                            "code": row[0]
-                        })
-                        updated_count += 1
-
-            conn.commit()
-
-        logger.info(f"Синхронизация завершена. Из {len(returns_list)} возвратов обновлено в БД: {updated_count}")
-        return updated_count
 
     def sync_ozon_returns(self, returns_list):
         """
@@ -1083,22 +937,24 @@ class DBManager:
                     to_update = rows[:info['qty']]
 
                     if not to_update:
-                        logger.warning(f"DB: Не найден КИЗ для заказа {order_id} (SKU: {sku}, ищем {info['qty']} шт.)")
+                        # logger.warning(f"DB: Не найден КИЗ для заказа {order_id} (SKU: {sku}, ищем {info['qty']} шт.)")
                         continue
 
                     for row in to_update:
                         new_status = f"Возврат: {info['status']}"
 
-                        # Пишем дату из API в "Дата обновления"
+                        # ИЗМЕНЕНИЕ: Пишем дату возврата из API в "Дата продажи",
+                        # а системное время - в "Дата обновления"
                         update_query = text("""
-                            UPDATE marking_codes 
-                            SET "Статус" = :new_status,
-                                "Дата обновления" = :return_date
-                            WHERE "Код маркировки" = :code
-                        """)
+                                            UPDATE marking_codes 
+                                            SET "Статус" = :new_status,
+                                                "Дата продажи" = :return_date,
+                                                "Дата обновления" = datetime('now', 'localtime')
+                                            WHERE "Код маркировки" = :code
+                                        """)
                         conn.execute(update_query, {
                             "new_status": new_status,
-                            "return_date": info['return_date'],
+                            "return_date": info['return_date'],  # Дата из API Ozon
                             "code": row[0]
                         })
                         updated_count += 1

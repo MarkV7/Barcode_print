@@ -514,10 +514,13 @@ class ReportsMode(ctk.CTkFrame):
 
         def worker():
             try:
-                # 1. Запрос к API
-                # returns_data = self.ozon_api.get_fbs_returns()
-                # Стало (вызываем новый метод с параметрами):
-                returns_data = self.ozon_api.get_returns_list_v1()
+                # 1. Запрос к API (ИЗМЕНЕНИЕ: собираем обе схемы за 90 дней)
+                returns_fbs = self.ozon_api.get_returns_list_v1(schema='FBS', days=90)
+                # когда нужно будет fbo, то раскомментировать!
+                # returns_fbo = self.ozon_api.get_returns_list_v1(schema='FBO', days=90)
+
+                # Объединяем списки
+                returns_data = returns_fbs #+ returns_fbo
 
                 self.after(0, lambda: self.ozon_sync_progress.set(0.5))
                 self.after(0, lambda: self.sync_label.configure(text="⏳ Обновление базы данных..."))
@@ -803,16 +806,16 @@ class ReportsMode(ctk.CTkFrame):
             mode_text = "ГЛУБОКОЕ" if deep else "БЫСТРОЕ"
             logger.info(f"--- Запуск синхронизации ({mode_text}) ---")
 
-            from ozon_fbs_api import OzonFBSAPI
-            from wildberries_fbs_api import WildberriesFBSAPI
-
-            ozon_api = None
-            wb_api = None
-
-            if self.app_context.ozon_client_id and self.app_context.ozon_api_key:
-                ozon_api = OzonFBSAPI(self.app_context.ozon_client_id, self.app_context.ozon_api_key)
-            if self.app_context.wb_api_token:
-                wb_api = WildberriesFBSAPI(self.app_context.wb_api_token)
+            # from ozon_fbs_api import OzonFBSAPI
+            # from wildberries_fbs_api import WildberriesFBSAPI
+            #
+            # ozon_api = None
+            # wb_api = None
+            #
+            # if self.app_context.ozon_client_id and self.app_context.ozon_api_key:
+            #     ozon_api = OzonFBSAPI(self.app_context.ozon_client_id, self.app_context.ozon_api_key)
+            # if self.app_context.wb_api_token:
+            #     wb_api = WildberriesFBSAPI(self.app_context.wb_api_token)
 
             where_clause = 'WHERE "Номер отправления" IS NOT NULL AND "Номер отправления" != ""' if deep else \
                            'WHERE "Статус" NOT IN ("Выкуплен", "Возврат") AND "Номер отправления" IS NOT NULL'
@@ -825,49 +828,96 @@ class ReportsMode(ctk.CTkFrame):
                 self._update_sync_ui("✅ Все актуально", 1.0)
                 return
 
+            # --- ДИАГНОСТИКА ---
+            found_mps = df_to_update["Маркетплейс"].unique().tolist()
+            logger.info(f"В базе найдены записи для маркетплейсов: {found_mps}")
+            # -------------------
+
             total_items = len(df_to_update)
             updated_count = 0
             processed_count = 0
 
             for mp, group in df_to_update.groupby("Маркетплейс"):
                 mp_name = str(mp).strip()
-
+                logger.info(f"Начало обработки группы: {mp_name} (записей: {len(group)})")
                 # --- OZON (Только статусы) ---
-                if mp_name == 'Ozon' and ozon_api:
+                if mp_name == 'Ozon':
                     order_ids = [str(x).strip() for x in group["Номер отправления"].unique().tolist() if x and str(x).lower() != 'nan']
                     for p_num in order_ids:
                         try:
-                            info = ozon_api.get_posting_info(p_num)
+                            info = self.ozon_api.get_posting_info(p_num)
                             res = info.get('result', {})
                             if res:
                                 new_status = self._map_ozon_status(res.get('status'))
+                                # ИЗМЕНЕНИЕ: Извлекаем дату события из Ozon
+                                # API Ozon обычно отдает 'in_process_at' или 'shipment_date' в формате '2024-03-19T10:00:00Z'
+                                raw_date = res.get('in_process_at') or res.get('shipment_date')
+                                sale_date = None
+                                if raw_date:
+                                    # Очищаем строку от 'T' и 'Z', чтобы SQLite правильно её понял
+                                    sale_date = raw_date.replace('T', ' ')[:19]
                                 mask = group["Номер отправления"] == p_num
                                 for _, row in group[mask].iterrows():
-                                    self.db.update_kiz_status(row['Код маркировки'], new_status)
+                                    self.db.update_kiz_status(row['Код маркировки'], new_status, sale_date=sale_date)
                                     updated_count += 1
                                     processed_count += 1
                         except: pass
                         self._update_sync_ui(f"Ozon: {processed_count}/{total_items}", processed_count/total_items)
 
-                # --- WB (Только статусы) ---
-                elif mp_name in ['WB', 'Wildberries'] and wb_api:
-                    # (Логика очистки ID остается как в прошлом шаге)
-                    raw_ids = [int(float(str(x))) for x in group["Номер отправления"].unique().tolist() if str(x).lower() != 'nan']
-                    for i in range(0, len(raw_ids), 100):
-                        chunk = raw_ids[i:i + 100]
+                # --- WB (Обновление статусов) ---
+                elif mp_name == 'WB':
+                    # 1. Извлекаем ID строго как строки, чтобы не терять цифры в конце
+                    raw_ids = [str(x).strip() for x in group["Номер отправления"].unique().tolist()
+                               if x and str(x).lower() != 'nan']
+
+                    logger.info(f"WB: Начинаю обработку {len(group)} записей...")
+                    # API WB v3 принимает список чисел, преобразуем аккуратно
+                    numeric_ids = []
+                    for rid in raw_ids:
                         try:
-                            statuses = wb_api.get_orders_statuses(chunk)
+                            # Убираем возможную точку (если затесалась из excel) и берем только целую часть
+                            clean_id = rid.split('.')[0]
+                            numeric_ids.append(int(clean_id))
+                        except:
+                            logger.error(f"WB: Ошибка с  {rid} номером отправления...")
+                            continue
+
+                    # Обработка пачками по 100 штук
+                    for i in range(0, len(numeric_ids), 100):
+                        chunk = numeric_ids[i:i + 100]
+                        try:
+                            statuses = self.wb_api.get_orders_statuses(chunk)
                             if statuses:
                                 for s in statuses:
-                                    wb_id = str(s.get('orderId'))
-                                    new_stat = self._map_wb_status(s.get('status'))
-                                    mask = group["Номер отправления"].astype(str).str.contains(wb_id, na=False)
+                                    wb_id = str(s.get('id'))
+                                    raw_stat = s.get('wbStatus')
+                                    new_stat = self._map_wb_status(raw_stat)
+
+                                    if not new_stat:
+                                        logger.error(f"WB: Ошибка с вычислением статуса {raw_stat}...")
+                                        continue
+
+                                    # Для WB API v3 в этом методе нет даты события.
+                                    # Используем текущее время как дату фиксации статуса
+                                    sale_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+                                    # Точное сопоставление (не contains, а равенство строк)
+                                    # Сначала приводим колонку к строке без .0
+                                    mask = group["Номер отправления"].apply(lambda x: str(x).split('.')[0]) == wb_id
+
                                     for _, row in group[mask].iterrows():
-                                        self.db.update_kiz_status(row['Код маркировки'], new_stat)
+                                        # Вызываем ваш метод (он сам разнесет даты по колонкам)
+                                        self.db.update_kiz_status(
+                                            row['Код маркировки'],
+                                            new_stat,
+                                            sale_date=sale_date
+                                        )
                                         updated_count += 1
                                         processed_count += 1
-                        except: pass
-                        self._update_sync_ui(f"WB: {processed_count}/{total_items}", processed_count/total_items)
+                        except Exception as e:
+                            logger.error(f"Ошибка WB при обновлении пачки: {e}")
+                            pass
+                        self._update_sync_ui(f"WB: {processed_count}/{total_items}", processed_count / total_items)
 
             self._update_sync_ui(f"✅ Готово: {updated_count}", 1.0)
             messagebox.showinfo("Готово", f"Обновлено статусов: {updated_count}")
@@ -881,8 +931,15 @@ class ReportsMode(ctk.CTkFrame):
 
     def _map_wb_status(self, wb_status):
         mapped = {
-            'delivered': 'Выкуплен', 'receive': 'Выкуплен', 'sold': 'Выкуплен',
-            'cancel': 'Возврат', 'reject': 'Возврат'
+            'waiting': 'Ожидает приемки',
+            'sorted': 'Ожидает приемки',
+            'accepted_by_carrier': 'Ожидает приемки',
+            'sold': 'Выкуплен',
+            'canceled': 'Возврат',
+            'defect': 'Возврат',
+            'declined_by_client': 'Возврат',
+            'canceled_by_client': 'Возврат',
+            'sent_to_carrier': 'Возврат на склад'
         }
         res = mapped.get(wb_status)
         if wb_status and not res:

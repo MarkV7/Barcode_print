@@ -342,23 +342,6 @@ class OzonFBSAPI:
         data = {"posting_number": posting_number}
         return self._request("POST", path, data=data)
 
-    # def get_fbs_returns(self, last_days: int = 7) -> List:
-    #     """
-    #     Получить список возвратов за последние N дней.
-    #     Помогает выявить товары, которые не были выкуплены.
-    #     """
-    #     path = "v2/returns/fbs/list"
-    #     # Вычисляем дату начала
-    #     since = (datetime.now(timezone.utc) - timedelta(days=last_days)).isoformat()
-    #
-    #     data = {
-    #         "filter": {
-    #             "last_id": 0
-    #         },
-    #         "limit": 1000
-    #     }
-    #     return self._request("POST", path, data=data).get('returns', [])
-
     def create_orders_report(self, date_from: str, date_to: str) -> Dict:
         """
         Запрос на создание отчета о реализации (postings).
